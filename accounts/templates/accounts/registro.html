@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Crear cuenta{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Crear cuenta</h2>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+    {% for field in form %}
+      <p>
+        <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+        {{ field }}
+        {{ field.errors }}
+        {% if field.help_text %}<small style="color:#5c6470;font-size:11px">{{ field.help_text }}</small>{% endif %}
+      </p>
+    {% endfor %}
+    <button type="submit">Crear cuenta</button>
+  </form>
+  <div class="link-secundario">
+    ¿Ya tenés cuenta? <a href="{% url 'accounts:login' %}">Iniciar sesión</a>
+  </div>
+</div>
+{% endblock %}

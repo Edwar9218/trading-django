@@ -1,0 +1,307 @@
+{% extends "base.html" %}
+{% block title %}Gráfico{% endblock %}
+{% block nav_chart %}activo{% endblock %}
+
+{% block extra_head %}
+<script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  .topline {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 0 16px;
+  }
+  .topline label { font-size: 12.5px; color: #848e9c; }
+  .topline input, .topline select {
+    background: #1a1e29; border: 1px solid #363c4e; border-radius: 6px;
+    color: #d1d4dc; font-size: 12.5px; padding: 6px 10px;
+  }
+  #btn-cargar {
+    background: #2962ff; border: none; border-radius: 6px; color: #fff;
+    font-size: 12.5px; font-weight: 600; padding: 7px 16px; cursor: pointer;
+  }
+  #btn-cargar:hover { background: #1e4fd6; }
+  #btn-cargar:disabled { opacity: .6; cursor: default; }
+  .toggles { display: flex; gap: 14px; align-items: center; margin-left: auto; font-size: 12.5px; color: #848e9c; }
+  .toggles label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .toggles input { accent-color: #2962ff; cursor: pointer; }
+
+  .chart-wrap { position: relative; border: 1px solid #2a2e39; border-radius: 8px; overflow: hidden; }
+  #chart-plot { height: 560px; }
+
+  #dibujo-hint {
+    font-size: 11px; color: #848e9c; margin-top: 6px;
+    display: none;
+  }
+  #dibujo-hint.show { display: block; }
+
+  .posicion-board {
+    position: absolute; top: 10px; right: 10px; z-index: 7;
+    display: none; flex-direction: column;
+    background: rgba(19,23,34,.94); border: 1px solid #2a2e39; border-radius: 6px;
+    overflow: hidden; min-width: 250px; max-width: 320px; font-size: 11px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.35);
+  }
+  .posicion-board.show { display: flex; }
+  .posicion-board .pb-title { padding: 6px 10px; background: #1e222d; color: #d9a441; font-weight: 600; letter-spacing: .04em; font-size: 10px; border-bottom: 1px solid #2a2e39; }
+  .posicion-board .pb-row { display: flex; flex-direction: column; gap: 3px; padding: 7px 10px; border-bottom: 1px solid #1e222d; }
+  .posicion-board .pb-row:last-child { border-bottom: none; }
+  .posicion-board .pb-row-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .posicion-board .pb-label { color: #d1d4dc; font-weight: 500; }
+  .posicion-board .pb-dir { font-weight: 600; padding: 1px 7px; border-radius: 10px; font-size: 10px; white-space: nowrap; }
+  .posicion-board .pb-sub { display: flex; justify-content: space-between; font-size: 10.5px; color: #d1d4dc; }
+  .posicion-board .pb-vigencia { font-size: 9.5px; font-weight: 600; padding: 1px 6px; border-radius: 8px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="topline">
+  <label>Divisa:</label>
+  <input id="symbol-input" type="text" placeholder="EURUSD" maxlength="20" style="width:110px" />
+  <label>Timeframe:</label>
+  <select id="timeframe-select">
+    <option value="M15">M15</option><option value="M30">M30</option>
+    <option value="H1">H1</option><option value="H2">H2</option>
+    <option value="H3">H3</option><option value="H4" selected>H4</option>
+    <option value="H6">H6</option><option value="H8">H8</option>
+    <option value="H12">H12</option><option value="D1">D1</option>
+    <option value="W1">W1</option><option value="MN1">MN1</option>
+  </select>
+  <label>Fecha (backtesting):</label>
+  <input id="fecha-input" type="date" />
+  <button id="btn-cargar">▶ Cargar</button>
+  <div class="toggles">
+    <label><input type="checkbox" id="chk-posicion-board" /> Tablero canales</label>
+    <label><input type="checkbox" id="chk-modo-dibujo" /> ✏️ Dibujar soporte/resistencia</label>
+  </div>
+</div>
+<div id="dibujo-hint">Modo dibujo activo: hacé click sobre el gráfico para trazar una línea horizontal (se guarda automáticamente para vos, en esta divisa y temporalidad).</div>
+
+<div class="chart-wrap">
+  <div id="chart-plot"></div>
+  <div class="posicion-board" id="posicion-board">
+    <div class="pb-title">TABLERO S-P-N</div>
+    <div id="posicion-board-body"></div>
+  </div>
+</div>
+
+<script>
+const symbolInput = document.getElementById("symbol-input");
+const timeframeSelect = document.getElementById("timeframe-select");
+const fechaInput = document.getElementById("fecha-input");
+const btnCargar = document.getElementById("btn-cargar");
+const chkPosicionBoard = document.getElementById("chk-posicion-board");
+const posicionBoard = document.getElementById("posicion-board");
+const posicionBoardBody = document.getElementById("posicion-board-body");
+const chkModoDibujo = document.getElementById("chk-modo-dibujo");
+const dibujoHint = document.getElementById("dibujo-hint");
+
+function getCookie(name) {
+  const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+  return v ? v.pop() : '';
+}
+const CSRF = getCookie('csrftoken');
+
+function hexToRgba(hex, alpha) {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+const chart = LightweightCharts.createChart(document.getElementById("chart-plot"), {
+  layout: { background: { color: "#131722" }, textColor: "#d1d4dc" },
+  grid: { vertLines: { color: "#1e222d" }, horzLines: { color: "#1e222d" } },
+  timeScale: { timeVisible: true, borderColor: "#2a2e39" },
+  rightPriceScale: { borderColor: "#2a2e39" },
+  autoSize: true,
+});
+const candleSerie = chart.addCandlestickSeries({
+  upColor: "#26a69a", downColor: "#ef5350",
+  borderVisible: false, wickUpColor: "#26a69a", wickDownColor: "#ef5350",
+});
+
+let channelSeries = [];      // series de canal ya dibujadas (para poder limpiarlas al recargar)
+let dibujoSeries = [];       // líneas horizontales del usuario (soporte/resistencia)
+let preciosDibujados = [];   // precios de esas líneas, en paralelo a dibujoSeries — para guardar el set completo
+let currentPosicion = [];
+let mostrarPosicionBoard = false;
+let modoDibujo = false;
+
+function limpiarSeries(lista) {
+  lista.forEach(s => { try { chart.removeSeries(s); } catch (e) {} });
+  return [];
+}
+
+function dibujarCanales(channels) {
+  channelSeries = limpiarSeries(channelSeries);
+  (channels || []).forEach(ch => {
+    if (!ch.base_points || !ch.base_points.length) return;
+    const linea = chart.addLineSeries({
+      color: ch.color || "#00E676", lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+    });
+    linea.setData(ch.base_points.map(p => ({ time: p.t, value: p.y })));
+    channelSeries.push(linea);
+    if (ch.par_points && ch.par_points.length) {
+      const par = chart.addLineSeries({
+        color: hexToRgba(ch.color || "#00E676", 0.6), lineWidth: 1, lineStyle: 1,
+        priceLineVisible: false, lastValueVisible: false,
+      });
+      par.setData(ch.par_points.map(p => ({ time: p.t, value: p.y })));
+      channelSeries.push(par);
+    }
+  });
+}
+
+function formatearTooltip(conf) {
+  if (!conf) return "";
+  const p = conf.precio_actual, top = conf.borde_top, bottom = conf.borde_bottom;
+  const disp = conf.displacement, dispMin = conf.displacement_minimo;
+  const pasaDisplacement = disp >= dispMin;
+  return [
+    `Cierre actual: ${p.toFixed(5)}`,
+    `Borde superior: ${top.toFixed(5)}`,
+    `Borde inferior: ${bottom.toFixed(5)}`,
+    `Distancia exacta: ${conf.distancia_exacta_pct.toFixed(2)}%`,
+    `Cuerpo de la vela: ${conf.cuerpo_vela.toFixed(5)} (${disp.toFixed(2)}× ATR)`,
+    `Displacement mínimo requerido: ${dispMin.toFixed(2)}× ATR — ${pasaDisplacement ? "SÍ lo supera" : "NO lo supera"}`,
+  ].join("\n");
+}
+
+function renderizarPosicionBoard() {
+  if (!mostrarPosicionBoard) { posicionBoard.classList.remove("show"); return; }
+  posicionBoard.classList.add("show");
+  if (!currentPosicion.length) {
+    posicionBoardBody.innerHTML = `<div style="padding:10px;color:#848e9c;text-align:center">Sin canales activos.</div>`;
+    return;
+  }
+  posicionBoardBody.innerHTML = currentPosicion.map(r => `
+    <div class="pb-row" title="${formatearTooltip(r.confirmacion)}" style="cursor:help">
+      <div class="pb-row-head">
+        <span class="pb-label">${r.label}</span>
+        <span class="pb-dir" style="background:${hexToRgba(r.estado_color, 0.18)}; color:${r.estado_color};">${r.estado_label}</span>
+      </div>
+      <div class="pb-sub">
+        <span>Distancia: <b>${r.distancia_pct === null ? "—" : r.distancia_pct + "%"}</b></span>
+        <span>Rotura: <span class="pb-vigencia" style="background:${hexToRgba(r.rotura_color, 0.18)}; color:${r.rotura_color};">${r.rotura_label}${r.lado_rotura ? " (" + r.lado_rotura + ")" : ""}</span></span>
+      </div>
+    </div>`).join("");
+}
+
+async function cargarDibujos(symbol, timeframe) {
+  dibujoSeries = limpiarSeries(dibujoSeries);
+  preciosDibujados = [];
+  try {
+    const resp = await fetch(`{% url 'chartview:api_dibujos_listar' %}?symbol=${symbol}&timeframe=${timeframe}`);
+    const data = await resp.json();
+    (data.dibujos || []).forEach(d => {
+      if (d.tipo === "hline" && d.datos && typeof d.datos.precio === "number") {
+        pintarLineaHorizontal(d.datos.precio);
+        preciosDibujados.push(d.datos.precio);
+      }
+    });
+  } catch (e) { /* silencioso: si falla, el usuario puede seguir dibujando de cero */ }
+}
+
+function pintarLineaHorizontal(precio) {
+  const linea = chart.addLineSeries({
+    color: "#d9a441", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: true,
+  });
+  const t0 = candleSerie.data && candleSerie.data().length ? candleSerie.data()[0].time : Math.floor(Date.now() / 1000);
+  linea.setData([{ time: t0, value: precio }]);
+  linea.createPriceLine({ price: precio, color: "#d9a441", lineWidth: 1, lineStyle: 2 });
+  dibujoSeries.push(linea);
+}
+
+// Manda el SET COMPLETO de líneas horizontales de esta divisa/temporalidad
+// (reemplaza lo guardado en el servidor) — por eso hay que acumular todos
+// los precios ya dibujados en `preciosDibujados`, no solo el último.
+async function guardarLineasHorizontales() {
+  const symbol = symbolInput.value.trim().toUpperCase();
+  const timeframe = timeframeSelect.value;
+  const dibujos = preciosDibujados.map(precio => ({ tipo: "hline", datos: { precio } }));
+  await fetch(`{% url 'chartview:api_dibujos_guardar' %}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
+    body: JSON.stringify({ symbol, timeframe, dibujos }),
+  });
+}
+
+chart.subscribeClick(param => {
+  if (!modoDibujo || !param.point) return;
+  const precio = candleSerie.coordinateToPrice(param.point.y);
+  if (precio === null) return;
+  pintarLineaHorizontal(precio);
+  preciosDibujados.push(precio);
+  guardarLineasHorizontales();
+});
+
+chkModoDibujo.addEventListener("change", e => {
+  modoDibujo = e.target.checked;
+  dibujoHint.classList.toggle("show", modoDibujo);
+});
+
+chkPosicionBoard.addEventListener("change", e => {
+  mostrarPosicionBoard = e.target.checked;
+  renderizarPosicionBoard();
+});
+
+let cargando = false;
+async function cargarDatos() {
+  if (cargando) return;
+  const symbol = symbolInput.value.trim().toUpperCase();
+  const timeframe = timeframeSelect.value;
+  const hasta = fechaInput.value;
+  if (!symbol) return;
+
+  cargando = true;
+  btnCargar.disabled = true;
+  btnCargar.textContent = "Cargando…";
+
+  const params = new URLSearchParams({ symbol, timeframe });
+  if (hasta) params.set("hasta", hasta);
+
+  try {
+    const resp = await fetch(`{% url 'chartview:api_datos' %}?${params.toString()}`);
+    const data = await resp.json();
+    if (data.error) { alert("Error: " + data.error); return; }
+
+    candleSerie.setData(data.candles.map(c => ({
+      time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
+    })));
+    dibujarCanales(data.channels);
+    currentPosicion = data.posicion_canales || [];
+    renderizarPosicionBoard();
+    chart.timeScale().fitContent();
+
+    await cargarDibujos(symbol, timeframe);
+
+    document.title = `${symbol} ${timeframe} — Gráfico`;
+  } catch (e) {
+    alert("No se pudo conectar con el servidor.");
+  } finally {
+    cargando = false;
+    btnCargar.disabled = false;
+    btnCargar.textContent = "▶ Cargar";
+  }
+}
+
+btnCargar.addEventListener("click", cargarDatos);
+symbolInput.addEventListener("keydown", e => { if (e.key === "Enter") cargarDatos(); });
+
+// ── Atajo desde el tablero: si venimos con ?symbol=...&timeframe=...&hasta=...
+// precargar y disparar la carga automáticamente. ──
+window.addEventListener("load", () => {
+  fechaInput.value = new Date().toISOString().slice(0, 10);
+  const params = new URLSearchParams(window.location.search);
+  const s = params.get("symbol");
+  const tf = params.get("timeframe");
+  const hasta = params.get("hasta");
+  if (s) symbolInput.value = s.toUpperCase();
+  if (tf && [...timeframeSelect.options].some(o => o.value === tf.toUpperCase())) {
+    timeframeSelect.value = tf.toUpperCase();
+  }
+  if (hasta) fechaInput.value = hasta;
+  if (s) cargarDatos();
+});
+</script>
+{% endblock %}

@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+{% block title %}Tablero{% endblock %}
+{% block nav_dashboard %}activo{% endblock %}
+
+{% block extra_head %}
+<style>
+  .picker-section {
+    padding: 16px 24px;
+    border: 1px solid #2a2e39;
+    border-radius: 10px;
+    background: #171b26;
+    margin-bottom: 16px;
+  }
+  .picker-title { font-size: 11px; color: #848e9c; letter-spacing: .05em; text-transform: uppercase; margin-bottom: 8px; }
+  .picker-row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+  .picker-row label { display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; user-select: none; }
+  .picker-row input[type="checkbox"] { accent-color: #2962ff; cursor: pointer; width: 15px; height: 15px; }
+  .custom-symbol-wrap { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+  #custom-symbol {
+    background: #1a1e29; border: 1px solid #363c4e; border-radius: 6px;
+    color: #d1d4dc; font-size: 12.5px; padding: 6px 10px; width: 180px;
+  }
+  #btn-add-symbol, #btn-guardar, #btn-recalcular {
+    background: #2962ff; border: none; border-radius: 6px; color: #fff;
+    font-size: 12.5px; font-weight: 600; padding: 7px 16px; cursor: pointer;
+  }
+  #btn-add-symbol:hover, #btn-guardar:hover, #btn-recalcular:hover { background: #1e4fd6; }
+  #btn-recalcular {
+    background: transparent; border: 1px solid #363c4e; color: #d1d4dc; margin-left: 8px;
+  }
+  #btn-recalcular:hover { background: transparent; border-color: #00c896; color: #00c896; }
+  #btn-recalcular:disabled { opacity: .6; cursor: default; }
+  #btn-recalcular .girando { display: inline-block; animation: girar 1s linear infinite; }
+  @keyframes girar { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  #btn-add-symbol { padding: 6px 12px; }
+
+  #estado-actualizacion { color: #848e9c; font-size: 11.5px; margin-bottom: 10px; }
+  #estado-actualizacion .punto { display:inline-block; width:7px; height:7px; border-radius:50%; background:#00c896; margin-right:5px; }
+
+  #tabla-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { border: 1px solid #2a2e39; padding: 7px 9px; text-align: center; white-space: nowrap; }
+  thead th.grupo { background: #1e222d; color: #d9a441; font-weight: 700; }
+  thead th.sub { background: #1a1e29; color: #848e9c; font-weight: 500; font-size: 10.5px; }
+  td.divisa { text-align: left; font-weight: 800; border-left: 4px solid transparent; }
+  td.tf { text-align: left; font-weight: 600; color: #d1d4dc; background: #1a1e29; }
+  td.tf-link { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-decoration-color: #363c4e; }
+  td.tf-link:hover { color: #2962ff; text-decoration-color: #2962ff; }
+  td.badge span { display: inline-block; padding: 2px 8px; border-radius: 10px; font-weight: 600; font-size: 10.5px; white-space: nowrap; }
+  td.error-cell { color: #ff5252; font-style: italic; text-align: left; }
+  tr.divisa-separador td { border-top: 2px solid #363c4e; }
+  #vacio { color: #848e9c; padding: 30px; text-align: center; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="picker-section">
+  <div class="picker-title">Divisas seguidas</div>
+  <div class="picker-row" id="divisas-row">
+    {% for d in divisas_sugeridas %}
+      <label><input type="checkbox" class="divisa-chk" value="{{ d }}" {% if d in mis_divisas %}checked{% endif %}> {{ d }}</label>
+    {% endfor %}
+  </div>
+  <div class="custom-symbol-wrap">
+    <input id="custom-symbol" type="text" placeholder="Agregar otra divisa, ej. USDMXN" maxlength="20" />
+    <button id="btn-add-symbol" type="button">+ Agregar</button>
+  </div>
+</div>
+
+<div class="picker-section">
+  <div class="picker-title">Temporalidades seguidas</div>
+  <div class="picker-row" id="timeframes-row">
+    {% for tf in todos_los_timeframes %}
+      <label><input type="checkbox" class="tf-chk" value="{{ tf }}" {% if tf in mis_timeframes %}checked{% endif %}> {{ tf }}</label>
+    {% endfor %}
+  </div>
+</div>
+
+<button id="btn-guardar" type="button">💾 Guardar selección</button>
+<button id="btn-recalcular" type="button">🔄 Recalcular ahora</button>
+
+<div style="margin-top:20px">
+  <div id="estado-actualizacion"><span class="punto"></span>Esperando primer cálculo…</div>
+  <div id="tabla-wrap" style="display:none">
+    <table id="tabla">
+      <thead>
+        <tr>
+          <th rowspan="2">Divisa</th>
+          <th rowspan="2">Temporalidad</th>
+          <th class="grupo" colspan="3">Canal largo</th>
+          <th class="grupo" colspan="3">Canal largo inverso</th>
+          <th class="grupo" colspan="3">Canal corto</th>
+          <th class="grupo" colspan="3">Canal corto inverso</th>
+        </tr>
+        <tr>
+          <th class="sub">Estado</th><th class="sub">Dist.</th><th class="sub">Rotura</th>
+          <th class="sub">Estado</th><th class="sub">Dist.</th><th class="sub">Rotura</th>
+          <th class="sub">Estado</th><th class="sub">Dist.</th><th class="sub">Rotura</th>
+          <th class="sub">Estado</th><th class="sub">Dist.</th><th class="sub">Rotura</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div id="vacio" style="display:none">Todavía no hay datos calculados para tu selección — Celery los arma cada 5 minutos (o guardá la selección para forzar el primer cálculo ya).</div>
+</div>
+
+<script>
+const PALETTE = ["#2962ff", "#00c896", "#ffa726", "#ab47bc", "#ef5350",
+                  "#26c6da", "#d4e157", "#8d6e63", "#78909c", "#ec407a"];
+
+function hexToRgba(hex, alpha) {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function getCookie(name) {
+  const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+  return v ? v.pop() : '';
+}
+const CSRF = getCookie('csrftoken');
+
+function formatearTooltip(conf) {
+  if (!conf) return "";
+  const p = conf.precio_actual, top = conf.borde_top, bottom = conf.borde_bottom;
+  const disp = conf.displacement, dispMin = conf.displacement_minimo;
+  const pasaDisplacement = disp >= dispMin;
+  return [
+    `Cierre actual: ${p.toFixed(5)}`,
+    `Borde superior: ${top.toFixed(5)}`,
+    `Borde inferior: ${bottom.toFixed(5)}`,
+    `Distancia exacta: ${conf.distancia_exacta_pct.toFixed(2)}%`,
+    `Cuerpo de la vela: ${conf.cuerpo_vela.toFixed(5)} (${disp.toFixed(2)}× ATR)`,
+    `Displacement mínimo requerido: ${dispMin.toFixed(2)}× ATR — ${pasaDisplacement ? "SÍ lo supera" : "NO lo supera"}`,
+  ].join("\n");
+}
+
+function celdaHtml(c) {
+  if (!c) return `<td class="badge"><span>—</span></td><td>—</td><td class="badge"><span>—</span></td>`;
+  const dist = (c.distancia_pct === null || c.distancia_pct === undefined) ? "—" : c.distancia_pct + "%";
+  const lado = c.lado_rotura ? ` (${c.lado_rotura})` : "";
+  const tooltip = formatearTooltip(c.confirmacion);
+  return `
+    <td class="badge" title="${tooltip}"><span style="background:${hexToRgba(c.estado_color, 0.18)}; color:${c.estado_color}; ${tooltip ? 'cursor:help;' : ''}">${c.estado_label}</span></td>
+    <td title="${tooltip}" style="${tooltip ? 'cursor:help;' : ''}">${dist}</td>
+    <td class="badge" title="${tooltip}"><span style="background:${hexToRgba(c.rotura_color, 0.18)}; color:${c.rotura_color}; ${tooltip ? 'cursor:help;' : ''}">${c.rotura_label}${lado}</span></td>`;
+}
+
+function abrirEnGrafico(symbol, timeframe) {
+  const params = new URLSearchParams({ symbol, timeframe });
+  window.open(`/grafico/?${params.toString()}`, "_blank");
+}
+
+let ultimaVistaTimestamp = null;   // se actualiza cada vez que refrescarVista() trae datos nuevos
+
+async function refrescarVista() {
+  try {
+    const resp = await fetch("{% url 'dashboard:api_snapshot' %}", { cache: "no-store" });
+    const data = await resp.json();
+    const tbody = document.querySelector("#tabla tbody");
+    const tablaWrap = document.getElementById("tabla-wrap");
+    const vacio = document.getElementById("vacio");
+    const estado = document.getElementById("estado-actualizacion");
+
+    if (!data.resultados || !data.resultados.length) {
+      tablaWrap.style.display = "none";
+      vacio.style.display = "block";
+      return;
+    }
+
+    let html = "";
+    data.resultados.forEach((res, idx) => {
+      const color = PALETTE[idx % PALETTE.length];
+      const bg = hexToRgba(color, 0.09);
+      const estiloFila = `style="background:${bg}"`;
+      const estiloDivisa = `style="background:${bg}; border-left-color:${color}; color:${color};"`;
+      if (res.error) {
+        html += `<tr class="divisa-separador" ${estiloFila}><td class="divisa" ${estiloDivisa}>${res.symbol}</td><td class="error-cell" colspan="13">${res.error}</td></tr>`;
+        return;
+      }
+      (res.filas || []).forEach((fila, i) => {
+        const sep = i === 0 ? " divisa-separador" : "";
+        if (fila.error) {
+          html += `<tr class="${sep}" ${estiloFila}><td class="divisa" ${estiloDivisa}>${i === 0 ? res.symbol : ""}</td><td class="tf">${fila.timeframe}</td><td class="error-cell" colspan="12">${fila.error}</td></tr>`;
+          return;
+        }
+        html += `<tr class="${sep}" ${estiloFila}>
+          <td class="divisa" ${estiloDivisa}>${i === 0 ? res.symbol : ""}</td>
+          <td class="tf tf-link" onclick="abrirEnGrafico('${res.symbol}', '${fila.timeframe}')">${fila.timeframe} ↗</td>
+          ${celdaHtml(fila.canal_largo)}
+          ${celdaHtml(fila.canal_largo_inverso)}
+          ${celdaHtml(fila.canal_corto)}
+          ${celdaHtml(fila.canal_corto_inverso)}
+        </tr>`;
+      });
+    });
+    tbody.innerHTML = html;
+    tablaWrap.style.display = "block";
+    vacio.style.display = "none";
+
+    if (data.ultima_actualizacion) {
+      ultimaVistaTimestamp = data.ultima_actualizacion;
+      const fecha = new Date(data.ultima_actualizacion);
+      estado.innerHTML = `<span class="punto"></span>Última actualización: ${fecha.toLocaleTimeString()} (Celery recalcula cada 5 min)`;
+    }
+  } catch (e) {
+    document.getElementById("estado-actualizacion").textContent = "No se pudo conectar con el servidor.";
+  }
+}
+
+async function guardarWatchlist() {
+  const simbolos = Array.from(document.querySelectorAll(".divisa-chk")).filter(c => c.checked).map(c => c.value);
+  const timeframes = Array.from(document.querySelectorAll(".tf-chk")).filter(c => c.checked).map(c => c.value);
+  await fetch("{% url 'dashboard:guardar_watchlist' %}", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
+    body: JSON.stringify({ simbolos, timeframes }),
+  });
+  esperarRecalculoYActualizar(document.getElementById("btn-guardar"), "Selección guardada");
+}
+
+// Pollea /api/snapshot/ cada 2s hasta que el timestamp "ultima_actualizacion"
+// avance más allá del momento en que se apretó el botón — así el usuario ve
+// el resultado apenas Celery termina, sin esperar el próximo ciclo de 60s
+// del polling normal ni tener que refrescar la página a mano.
+function esperarRecalculoYActualizar(boton, mensajeInicial) {
+  const desde = ultimaVistaTimestamp ? new Date(ultimaVistaTimestamp) : new Date(0);
+  const estado = document.getElementById("estado-actualizacion");
+  estado.innerHTML = `<span class="punto"></span>${mensajeInicial} — calculando en segundo plano…`;
+
+  const textoOriginal = boton.textContent;
+  boton.disabled = true;
+  boton.innerHTML = '<span class="girando">🔄</span> Calculando…';
+
+  let intentos = 0;
+  const maxIntentos = 20;   // ~40s de espera activa (2s × 20)
+  const intervalo = setInterval(async () => {
+    intentos++;
+    await refrescarVista();
+    const listo = ultimaVistaTimestamp && new Date(ultimaVistaTimestamp) > desde;
+    if (listo || intentos >= maxIntentos) {
+      clearInterval(intervalo);
+      boton.disabled = false;
+      boton.textContent = textoOriginal;
+      if (!listo) {
+        estado.textContent = "Sigue calculando en segundo plano — se va a actualizar solo cuando termine (revisá en unos minutos).";
+      }
+    }
+  }, 2000);
+}
+
+async function recalcularAhora() {
+  const boton = document.getElementById("btn-recalcular");
+  try {
+    const resp = await fetch("{% url 'dashboard:recalcular_ahora' %}", {
+      method: "POST",
+      headers: { "X-CSRFToken": CSRF },
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      document.getElementById("estado-actualizacion").textContent =
+        "No se pudo recalcular: " + (data.error || "Celery no está disponible ahora mismo.");
+      return;
+    }
+    esperarRecalculoYActualizar(boton, "Recalculando");
+  } catch (e) {
+    document.getElementById("estado-actualizacion").textContent = "No se pudo conectar con el servidor.";
+  }
+}
+document.getElementById("btn-add-symbol").addEventListener("click", () => {
+  const input = document.getElementById("custom-symbol");
+  const val = input.value.trim().toUpperCase();
+  if (!val) return;
+  const fila = document.getElementById("divisas-row");
+  const existente = fila.querySelector(`.divisa-chk[value="${val}"]`);
+  if (existente) { existente.checked = true; } else {
+    const label = document.createElement("label");
+    label.innerHTML = `<input type="checkbox" class="divisa-chk" value="${val}" checked> ${val}`;
+    fila.appendChild(label);
+  }
+  input.value = "";
+});
+
+document.getElementById("btn-guardar").addEventListener("click", guardarWatchlist);
+document.getElementById("btn-recalcular").addEventListener("click", recalcularAhora);
+
+// Polling liviano (solo lee snapshots ya calculados, no recalcula nada
+// en el navegador ni dispara MT5) — cada 60s alcanza para reflejar el
+// recálculo de Celery que corre cada 5 min, sin sobrecargar de pedidos.
+refrescarVista();
+setInterval(refrescarVista, 60000);
+</script>
+{% endblock %}

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Iniciar sesión{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>Iniciar sesión</h2>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+    <p>
+      <label for="{{ form.username.id_for_label }}">Usuario</label>
+      {{ form.username }}
+      {{ form.username.errors }}
+    </p>
+    <p>
+      <label for="{{ form.password.id_for_label }}">Contraseña</label>
+      {{ form.password }}
+      {{ form.password.errors }}
+    </p>
+    <button type="submit">Entrar</button>
+  </form>
+  <div class="link-secundario">
+    ¿No tenés cuenta? <a href="{% url 'accounts:registro' %}">Registrate acá</a>
+  </div>
+</div>
+{% endblock %}
