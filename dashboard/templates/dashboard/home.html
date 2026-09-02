@@ -292,5 +292,13 @@ document.getElementById("btn-recalcular").addEventListener("click", recalcularAh
 // recálculo de Celery que corre cada 5 min, sin sobrecargar de pedidos.
 refrescarVista();
 setInterval(refrescarVista, 60000);
+
+// Al abrir el tablero (por ejemplo, apenas se abre desde arrancar.bat),
+// disparar un recálculo inmediato en vez de esperar hasta 5 minutos a
+// que lo haga Celery solo — solo si ya hay una selección guardada, así
+// no falla la primera vez que alguien entra sin haber tildado nada.
+{% if mis_divisas and mis_timeframes %}
+recalcularAhora();
+{% endif %}
 </script>
 {% endblock %}

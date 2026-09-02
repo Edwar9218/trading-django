@@ -50,6 +50,52 @@ def api_datos(request):
 
 
 @login_required
+def api_velas_extra(request):
+    """Botón 'Cargar más historial' — mismo contrato que /velas_extra del
+    servidor Flask original: trae un lote de velas más viejas que las que
+    ya tiene el navegador, SIN recalcular canales/Kalman/SMF."""
+    symbol = request.GET.get("symbol", "").strip()
+    timeframe = request.GET.get("timeframe", "H4").strip()
+    antes_de = request.GET.get("antes_de", "").strip()
+    cantidad = request.GET.get("cantidad", "500").strip()
+
+    if not symbol or not antes_de:
+        return JsonResponse({"error": "Faltan parámetros symbol/antes_de."}, status=400)
+    try:
+        antes_de_ts = int(antes_de)
+        cantidad = max(50, min(int(cantidad), 5000))
+    except ValueError:
+        return JsonResponse({"error": "antes_de/cantidad deben ser números."}, status=400)
+
+    try:
+        candles = analysis.fetch_mt5_older_candles(symbol, timeframe, antes_de_ts, cantidad)
+    except (analysis.Mt5Unavailable, analysis.Mt5DataError) as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    except Exception as e:
+        return JsonResponse({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+    return JsonResponse({"candles": candles})
+
+
+@login_required
+def api_config(request):
+    """Mismo contrato que /config del servidor Flask original — le dice
+    al HTML cuáles son el símbolo/timeframe por defecto para precargar
+    los selectores sin duplicar esos valores a mano en el frontend."""
+    return JsonResponse({
+        "symbol": analysis.cfg("SYMBOL", "EURUSD"),
+        "timeframe": analysis.cfg("TIMEFRAME", "H4"),
+    })
+
+
+@login_required
+def api_ping(request):
+    """Mismo contrato que /ping — usado por el indicador de 'Servidor
+    online' en la barra superior del gráfico."""
+    return JsonResponse({"status": "ok"})
+
+
+@login_required
 def api_dibujos_listar(request):
     """Trae los dibujos guardados de ESTE usuario para esta divisa +
     temporalidad — así al volver a abrir el gráfico aparecen tal cual se
