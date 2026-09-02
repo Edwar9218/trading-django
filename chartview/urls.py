@@ -11,4 +11,5 @@ urlpatterns = [
     path("api/ping/", views.api_ping, name="api_ping"),
     path("api/dibujos/", views.api_dibujos_listar, name="api_dibujos_listar"),
     path("api/dibujos/guardar/", views.api_dibujos_guardar, name="api_dibujos_guardar"),
+    path("api/preferencia/guardar/", views.api_preferencia_guardar, name="api_preferencia_guardar"),
 ]

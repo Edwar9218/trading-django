@@ -14,5 +14,17 @@ class PerfilUsuario(models.Model):
     tema_oscuro = models.BooleanField(default=True)
     creado = models.DateTimeField(auto_now_add=True)
 
+    # ── Preferencias del gráfico (checkboxes de la barra de canales) ──
+    # Se guardan por usuario para que no haya que volver a tildarlas cada
+    # vez que se entra a /grafico/ — los defaults acá abajo coinciden con
+    # los que ya tenía el HTML antes de que existiera esta persistencia.
+    pref_largo = models.BooleanField(default=True)
+    pref_mediano = models.BooleanField(default=True)
+    pref_corto = models.BooleanField(default=True)
+    pref_relleno = models.BooleanField(default=False)
+    pref_kalman = models.BooleanField(default=True)
+    pref_auto_pivot = models.BooleanField(default=False)
+    pref_tablero_canales = models.BooleanField(default=False)
+
     def __str__(self):
         return f"Perfil de {self.user.username}"

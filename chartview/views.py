@@ -16,11 +16,49 @@ def grafico(request):
     original). Se llega acá directo desde el menú, o vía el atajo del
     tablero con ?symbol=...&timeframe=...&hasta=... precargado.
     """
+    perfil = request.user.perfil
     return render(request, "chartview/grafico.html", {
         "symbol_inicial": request.GET.get("symbol", ""),
         "timeframe_inicial": request.GET.get("timeframe", ""),
         "hasta_inicial": request.GET.get("hasta", ""),
+        # Preferencias de checkboxes guardadas — así no hay que
+        # volver a tildarlas cada vez que se entra al gráfico.
+        "pref_largo": perfil.pref_largo,
+        "pref_mediano": perfil.pref_mediano,
+        "pref_corto": perfil.pref_corto,
+        "pref_relleno": perfil.pref_relleno,
+        "pref_kalman": perfil.pref_kalman,
+        "pref_auto_pivot": perfil.pref_auto_pivot,
+        "pref_tablero_canales": perfil.pref_tablero_canales,
     })
+
+
+# Nombre de checkbox (tal como lo manda el JS) -> campo real del modelo.
+_CAMPOS_PREFERENCIA = {
+    "largo": "pref_largo",
+    "mediano": "pref_mediano",
+    "corto": "pref_corto",
+    "relleno": "pref_relleno",
+    "kalman": "pref_kalman",
+    "auto_pivot": "pref_auto_pivot",
+    "tablero_canales": "pref_tablero_canales",
+}
+
+
+@login_required
+@require_POST
+def api_preferencia_guardar(request):
+    """Guarda UN checkbox de la barra de canales apenas cambia — se llama
+    en cada 'change', no hace falta un botón de guardar aparte."""
+    body = json.loads(request.body or "{}")
+    campo = _CAMPOS_PREFERENCIA.get(body.get("campo", ""))
+    if campo is None:
+        return JsonResponse({"ok": False, "error": "Campo desconocido."}, status=400)
+
+    valor = bool(body.get("valor"))
+    setattr(request.user.perfil, campo, valor)
+    request.user.perfil.save(update_fields=[campo])
+    return JsonResponse({"ok": True})
 
 
 @login_required

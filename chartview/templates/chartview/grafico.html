@@ -557,16 +557,16 @@
     </div>
 
     <div class="channel-toggles">
-      <label class="lbl-largo"><input type="checkbox" class="chk-largo" checked> Largo</label>
-      <label class="lbl-mediano"><input type="checkbox" class="chk-mediano" checked> Mediano</label>
-      <label class="lbl-corto"><input type="checkbox" class="chk-corto" checked> Corto</label>
-      <label><input type="checkbox" class="chk-relleno"> Relleno</label>
-      <label><input type="checkbox" class="chk-kalman" checked> Kalman</label>
+      <label class="lbl-largo"><input type="checkbox" class="chk-largo" {% if pref_largo %}checked{% endif %}> Largo</label>
+      <label class="lbl-mediano"><input type="checkbox" class="chk-mediano" {% if pref_mediano %}checked{% endif %}> Mediano</label>
+      <label class="lbl-corto"><input type="checkbox" class="chk-corto" {% if pref_corto %}checked{% endif %}> Corto</label>
+      <label><input type="checkbox" class="chk-relleno" {% if pref_relleno %}checked{% endif %}> Relleno</label>
+      <label><input type="checkbox" class="chk-kalman" {% if pref_kalman %}checked{% endif %}> Kalman</label>
       <label title="Prueba varios pivot_len para cada canal y se queda con el de mejor calidad — más lento, pero no hace falta afinarlo a mano en config.py">
-        <input type="checkbox" class="chk-auto-pivot"> Pivot auto
+        <input type="checkbox" class="chk-auto-pivot" {% if pref_auto_pivot %}checked{% endif %}> Pivot auto
       </label>
       <label title="Para cada uno de los 4 canales (largo, largo inverso, corto, corto inverso), muestra dónde está el precio ahora: adentro, tocando un borde, rompiendo o ya rompió. Solo información vigente, sin arrastrar eventos viejos.">
-        <input type="checkbox" class="chk-posicion-board"> Tablero canales
+        <input type="checkbox" class="chk-posicion-board" {% if pref_tablero_canales %}checked{% endif %}> Tablero canales
       </label>
     </div>
 
@@ -628,6 +628,7 @@ const API = {
   tablero: "{% url 'dashboard:home' %}",
   dibujos_listar: "{% url 'chartview:api_dibujos_listar' %}",
   dibujos_guardar: "{% url 'chartview:api_dibujos_guardar' %}",
+  preferencia_guardar: "{% url 'chartview:api_preferencia_guardar' %}",
 };
 
 function getCookie(name) {
@@ -635,6 +636,17 @@ function getCookie(name) {
   return v ? v.pop() : '';
 }
 const CSRF_TOKEN = getCookie('csrftoken');
+
+// Guarda UN checkbox de la barra de canales apenas cambia (sin botón
+// aparte) — así la próxima vez que se entra a /grafico/ quedan tal cual
+// se dejaron, en vez de volver siempre a los valores por defecto.
+function guardarPreferencia(campo, valor) {
+  fetch(API.preferencia_guardar, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF_TOKEN },
+    body: JSON.stringify({ campo, valor }),
+  }).catch(() => { /* guardado en segundo plano, no bloquea la UI */ });
+}
 
 // Versión global de hexToRgba (crearPanel() define su propia copia interna
 // para las funciones de dibujo del canvas; esta es la que usan los
@@ -708,14 +720,17 @@ function crearPanel(rootEl, opciones = {}) {
   let currentKalman = null;
   let currentPivots = [];
   let currentPosicionCanales = [];    // tablero: posición del precio respecto a cada canal
-  let mostrarPosicionBoard = false;   // apagado por defecto — se prende con el checkbox
-  let mostrarKalman = true;
+  // Estado inicial de estos toggles = lo que Django ya precargó en el
+  // checkbox (preferencia guardada del usuario), no un valor fijo — así
+  // el estado interno del panel arranca sincronizado con lo que se ve.
+  let mostrarPosicionBoard = chkPosicionBoard.checked;
+  let mostrarKalman = chkKalman.checked;
   let lastRealTime = null;
   let loadedCandles = [];
   let symbolActual = null, timeframeActual = null;
   let cargandoDatos = false, cargandoMas = false;
-  let filtroCanales = { largo: true, mediano: true, corto: true };
-  let mostrarRelleno = false;
+  let filtroCanales = { largo: chkLargo.checked, mediano: chkMediano.checked, corto: chkCorto.checked };
+  let mostrarRelleno = chkRelleno.checked;
 
   // ── Barra de dibujo (estilo TradingView) ──
   const TOOL_COLORS = {
@@ -1762,16 +1777,35 @@ function crearPanel(rootEl, opciones = {}) {
       symbolInput.focus();
     });
 
-    chkLargo.addEventListener("change", e => { filtroCanales.largo = e.target.checked; dibujarCanales(); });
-    chkMediano.addEventListener("change", e => { filtroCanales.mediano = e.target.checked; dibujarCanales(); });
-    chkCorto.addEventListener("change", e => { filtroCanales.corto = e.target.checked; dibujarCanales(); });
-    chkRelleno.addEventListener("change", e => { mostrarRelleno = e.target.checked; redrawOverlay(); });
-    chkKalman.addEventListener("change", e => { mostrarKalman = e.target.checked; dibujarKalmanYMarkers(); });
+    chkLargo.addEventListener("change", e => {
+      filtroCanales.largo = e.target.checked; dibujarCanales();
+      guardarPreferencia("largo", e.target.checked);
+    });
+    chkMediano.addEventListener("change", e => {
+      filtroCanales.mediano = e.target.checked; dibujarCanales();
+      guardarPreferencia("mediano", e.target.checked);
+    });
+    chkCorto.addEventListener("change", e => {
+      filtroCanales.corto = e.target.checked; dibujarCanales();
+      guardarPreferencia("corto", e.target.checked);
+    });
+    chkRelleno.addEventListener("change", e => {
+      mostrarRelleno = e.target.checked; redrawOverlay();
+      guardarPreferencia("relleno", e.target.checked);
+    });
+    chkKalman.addEventListener("change", e => {
+      mostrarKalman = e.target.checked; dibujarKalmanYMarkers();
+      guardarPreferencia("kalman", e.target.checked);
+    });
+    chkAutoPivot.addEventListener("change", e => {
+      guardarPreferencia("auto_pivot", e.target.checked);
+    });
     // Tablero de canales: el veredicto ya viene en cada respuesta de
     // /datos, así que tildar/destildar solo muestra u oculta el panel.
     chkPosicionBoard.addEventListener("change", e => {
       mostrarPosicionBoard = e.target.checked;
       renderizarPosicionBoard();
+      guardarPreferencia("tablero_canales", e.target.checked);
     });
 
     // Colapsar/expandir la info (señal/kalman/canales + fecha/estado del
