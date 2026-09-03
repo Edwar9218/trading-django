@@ -291,12 +291,15 @@ async function refrescarVista() {
   try {
     const resp = await fetch("{% url 'dashboard:api_snapshot' %}", { cache: "no-store" });
     const data = await resp.json();
+    console.log("[refrescarVista] respuesta cruda del servidor:", data);
+
     const tbody = document.querySelector("#tabla tbody");
     const tablaWrap = document.getElementById("tabla-wrap");
     const vacio = document.getElementById("vacio");
     const estado = document.getElementById("estado-actualizacion");
 
     if (!data.resultados || !data.resultados.length) {
+      console.log("[refrescarVista] sin resultados todavia (tabla vacia)");
       tablaWrap.style.display = "none";
       vacio.style.display = "block";
       return;
@@ -304,17 +307,20 @@ async function refrescarVista() {
 
     let html = "";
     data.resultados.forEach((res, idx) => {
+      console.log(`[refrescarVista] procesando divisa "${res.symbol}":`, res);
       const color = PALETTE[idx % PALETTE.length];
       const bg = hexToRgba(color, 0.09);
       const estiloFila = `style="background:${bg}"`;
       const estiloDivisa = `style="background:${bg}; border-left-color:${color}; color:${color};"`;
       if (res.error) {
+        console.warn(`[refrescarVista] "${res.symbol}" tiene error general:`, res.error);
         html += `<tr class="divisa-separador" ${estiloFila}><td class="divisa" ${estiloDivisa}>${res.symbol}</td><td class="error-cell" colspan="13">${res.error}</td></tr>`;
         return;
       }
       (res.filas || []).forEach((fila, i) => {
         const sep = i === 0 ? " divisa-separador" : "";
         if (fila.error) {
+          console.warn(`[refrescarVista] "${res.symbol}" ${fila.timeframe} tiene error:`, fila.error);
           html += `<tr class="${sep}" ${estiloFila}><td class="divisa" ${estiloDivisa}>${i === 0 ? res.symbol : ""}</td><td class="tf">${fila.timeframe}</td><td class="error-cell" colspan="12">${fila.error}</td></tr>`;
           return;
         }
@@ -341,19 +347,58 @@ async function refrescarVista() {
       const fecha = new Date(data.ultima_actualizacion);
       estado.innerHTML = `<span class="punto"></span>Última actualización: ${fecha.toLocaleTimeString()} (Celery recalcula cada 5 min)`;
     }
+    console.log("[refrescarVista] tabla actualizada OK");
   } catch (e) {
-    document.getElementById("estado-actualizacion").textContent = "No se pudo conectar con el servidor.";
+    // Antes esto tapaba CUALQUIER error (de red o de JavaScript al armar
+    // la tabla) con el mismo mensaje generico "No se pudo conectar" — lo
+    // cual era enganoso si el problema real era, por ejemplo, un dato
+    // raro de una divisa nueva rompiendo el armado del HTML. Ahora el
+    // error real queda en la consola del navegador (F12 -> Console).
+    console.error("[refrescarVista] ERROR:", e);
+    document.getElementById("estado-actualizacion").textContent =
+      "Error al actualizar la vista (ver consola del navegador, F12): " + e.message;
   }
 }
 
 async function guardarWatchlist() {
   const simbolos = Array.from(document.querySelectorAll(".divisa-chk")).filter(c => c.checked).map(c => c.value);
   const timeframes = Array.from(document.querySelectorAll(".tf-chk")).filter(c => c.checked).map(c => c.value);
-  await fetch("{% url 'dashboard:guardar_watchlist' %}", {
+  console.log("[guardarWatchlist] enviando al servidor -> simbolos:", simbolos, "| timeframes:", timeframes);
+
+  const resp = await fetch("{% url 'dashboard:guardar_watchlist' %}", {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
     body: JSON.stringify({ simbolos, timeframes }),
   });
+  const data = await resp.json();
+  console.log("[guardarWatchlist] respuesta del servidor:", resp.status, data);
+
+  // Si solo se destildó algo (sin agregar nada nuevo), el servidor ya
+  // borró lo que sobraba y NO hace falta esperar ningún cálculo — con
+  // refrescar la vista una vez alcanza, sin pasar por el "Calculando…"
+  // ni el polling de espera.
+  if (!data.recalculo_necesario) {
+    console.log("[guardarWatchlist] no hacia falta recalcular (solo se quito algo) -- refrescando la vista directo");
+    document.getElementById("estado-actualizacion").innerHTML =
+      `<span class="punto"></span>Selección actualizada.`;
+    await refrescarVista();
+    return;
+  }
+
+  // Antes esto no se chequeaba — si Celery no podía encolar la tarea
+  // (ej. worker apagado, broker con problemas), el usuario veía el
+  // mismo mensaje de "calculando" de siempre y nunca se enteraba de que
+  // en realidad NADA se iba a calcular hasta el próximo barrido de los
+  // 5 min. Ahora el error queda visible de una.
+  if (!data.recalculo_en_curso) {
+    console.warn("[guardarWatchlist] el servidor NO pudo encolar el calculo:", data.error);
+    document.getElementById("estado-actualizacion").innerHTML =
+      `<span class="punto" style="background:#ff5252"></span>Selección guardada, pero no se pudo encolar el cálculo` +
+      (data.error ? `: ${data.error}` : " (revisá que el worker de Celery esté corriendo).") +
+      ` Se va a calcular solo en el próximo barrido automático (cada 5 min).`;
+    return;
+  }
+
   esperarRecalculoYActualizar(document.getElementById("btn-guardar"), "Selección guardada");
 }
 
@@ -361,8 +406,20 @@ async function guardarWatchlist() {
 // avance más allá del momento en que se apretó el botón — así el usuario ve
 // el resultado apenas Celery termina, sin esperar el próximo ciclo de 60s
 // del polling normal ni tener que refrescar la página a mano.
+let intervaloEsperaActivo = null;   // para poder cancelar un poll viejo si se arranca uno nuevo
+
 function esperarRecalculoYActualizar(boton, mensajeInicial) {
+  // Si ya había un poll corriendo de un guardado anterior (ej. guardaste
+  // dos veces seguidas antes de que terminara el cálculo previo), se
+  // cancela — si no, quedaban VARIOS relojes corriendo en paralelo,
+  // cada uno rindiéndose a los 40s por su cuenta.
+  if (intervaloEsperaActivo) {
+    console.log("[esperarRecalculoYActualizar] cancelando un poll anterior que seguía corriendo");
+    clearInterval(intervaloEsperaActivo);
+  }
+
   const desde = ultimaVistaTimestamp ? new Date(ultimaVistaTimestamp) : new Date(0);
+  console.log(`[esperarRecalculoYActualizar] esperando timestamp mayor a: ${desde.toISOString()}`);
   const estado = document.getElementById("estado-actualizacion");
   estado.innerHTML = `<span class="punto"></span>${mensajeInicial} — calculando en segundo plano…`;
 
@@ -370,18 +427,34 @@ function esperarRecalculoYActualizar(boton, mensajeInicial) {
   boton.disabled = true;
   boton.innerHTML = '<span class="girando">🔄</span> Calculando…';
 
+  // El tiempo de espera activa se ajusta según cuántas divisas hay
+  // tildadas: cada una tarda ~4-5s reales contra MT5 (varias
+  // temporalidades cada una), así que con muchas divisas el cálculo
+  // completo puede superar fácil el minuto — un límite fijo de 40s
+  // (como había antes) se quedaba corto y el usuario veía "no cargó
+  // nada" justo porque el cálculo real todavía no había terminado.
+  const cantidadDivisas = document.querySelectorAll(".divisa-chk:checked").length || 1;
+  const segundosEstimados = Math.max(40, cantidadDivisas * 6);
+  const maxIntentos = Math.ceil(segundosEstimados / 2);   // intervalo de 2s entre intentos
+  console.log(`[esperarRecalculoYActualizar] ${cantidadDivisas} divisas tildadas -> esperando hasta ~${segundosEstimados}s (${maxIntentos} intentos)`);
+
   let intentos = 0;
-  const maxIntentos = 20;   // ~40s de espera activa (2s × 20)
-  const intervalo = setInterval(async () => {
+  intervaloEsperaActivo = setInterval(async () => {
     intentos++;
+    console.log(`[esperarRecalculoYActualizar] intento ${intentos}/${maxIntentos}`);
     await refrescarVista();
     const listo = ultimaVistaTimestamp && new Date(ultimaVistaTimestamp) > desde;
+    console.log(`[esperarRecalculoYActualizar] ultimaVistaTimestamp=${ultimaVistaTimestamp} | listo=${listo}`);
     if (listo || intentos >= maxIntentos) {
-      clearInterval(intervalo);
+      clearInterval(intervaloEsperaActivo);
+      intervaloEsperaActivo = null;
       boton.disabled = false;
       boton.textContent = textoOriginal;
       if (!listo) {
-        estado.textContent = "Sigue calculando en segundo plano — se va a actualizar solo cuando termine (revisá en unos minutos).";
+        console.warn("[esperarRecalculoYActualizar] se agoto el tiempo de espera sin detectar el nuevo calculo");
+        estado.textContent = "Sigue calculando en segundo plano (con varias divisas puede tardar más de un minuto) — la tabla se va a actualizar sola apenas termine, no hace falta hacer nada.";
+      } else {
+        console.log("[esperarRecalculoYActualizar] listo, tabla actualizada");
       }
     }
   }, 2000);

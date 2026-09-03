@@ -26,5 +26,15 @@ class PerfilUsuario(models.Model):
     pref_auto_pivot = models.BooleanField(default=False)
     pref_tablero_canales = models.BooleanField(default=False)
 
+    # ── Generación del watchlist ──
+    # Se incrementa cada vez que el usuario guarda una selección nueva o
+    # aprieta "Recalcular ahora". Las tareas de Celery en curso chequean
+    # este número contra el que tenían al arrancar — si cambió, significa
+    # que el usuario ya pidió algo más nuevo, así que la tarea vieja se
+    # aborta sin seguir calculando divisas que ya no importan, en vez de
+    # terminar su recorrido completo y potencialmente pisar el resultado
+    # más reciente.
+    watchlist_generacion = models.PositiveIntegerField(default=0)
+
     def __str__(self):
         return f"Perfil de {self.user.username}"
