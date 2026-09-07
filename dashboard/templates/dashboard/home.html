@@ -37,6 +37,52 @@
   #estado-actualizacion { color: #848e9c; font-size: 11.5px; margin-bottom: 10px; }
   #estado-actualizacion .punto { display:inline-block; width:7px; height:7px; border-radius:50%; background:#00c896; margin-right:5px; }
 
+  /* ── Overlay de carga a pantalla completa (con contador de %) ──
+     Se muestra mientras el tablero se recalcula en segundo plano
+     (guardar selección / recalcular ahora), para que la espera se
+     sienta acompañada en vez de un simple botón girando. El % es una
+     estimación animada (no viene del servidor paso a paso) — sube
+     suave hasta 95% en el tiempo que se espera que tarde el cálculo
+     real, y solo llega a 100% cuando la tabla realmente se actualiza. */
+  #overlay-carga {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: rgba(13, 16, 23, 0.92);
+    backdrop-filter: blur(2px);
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+  #overlay-carga.visible { display: flex; }
+  #overlay-carga .porcentaje {
+    font-size: 64px;
+    font-weight: 800;
+    color: #2962ff;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  #overlay-carga .porcentaje .signo { font-size: 32px; color: #848e9c; margin-left: 2px; }
+  #overlay-carga .barra-wrap {
+    width: min(320px, 70vw);
+    height: 6px;
+    background: #1e222d;
+    border-radius: 3px;
+    margin: 18px 0 14px;
+    overflow: hidden;
+  }
+  #overlay-carga .barra {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #2962ff, #00c896);
+    border-radius: 3px;
+    transition: width .15s linear;
+  }
+  #overlay-carga .titulo { font-size: 15px; font-weight: 600; color: #d1d4dc; margin-bottom: 4px; }
+  #overlay-carga .subtitulo { font-size: 12.5px; color: #848e9c; max-width: 320px; }
+
   #tabla-wrap { overflow-x: auto; position: relative; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
   th, td { border: 1px solid #2a2e39; padding: 7px 9px; text-align: center; white-space: nowrap; }
@@ -73,6 +119,13 @@
 {% endblock %}
 
 {% block content %}
+<div id="overlay-carga">
+  <div class="porcentaje"><span id="overlay-pct">0</span><span class="signo">%</span></div>
+  <div class="barra-wrap"><div class="barra" id="overlay-barra"></div></div>
+  <div class="titulo" id="overlay-titulo">Calculando tablero…</div>
+  <div class="subtitulo" id="overlay-subtitulo">Trayendo velas y recalculando canales — no hace falta recargar la página.</div>
+</div>
+
 <div class="picker-section">
   <div class="picker-title">Divisas seguidas</div>
   <div class="picker-row" id="divisas-row">
@@ -287,6 +340,58 @@ window.addEventListener("scroll", actualizarHeaderFijo, { passive: true });
 window.addEventListener("resize", actualizarHeaderFijo);
 document.getElementById("tabla-wrap").addEventListener("scroll", actualizarHeaderFijo, { passive: true });
 
+// ── Overlay de carga a pantalla completa con contador de % ──
+// El % es SIMULADO (no viene del servidor paso a paso): sube parejo
+// hasta un techo de 95% en el tiempo que se estima que tarde el
+// cálculo real, y se queda ahí clavado si se tarda más de lo previsto
+// — nunca miente diciendo "100%" antes de que la tabla realmente se
+// haya actualizado. Cuando esperarRecalculoYActualizar() detecta el
+// dato nuevo (o se agota el tiempo), completa a 100% (o cierra) desde
+// afuera.
+let overlayIntervaloPct = null;
+
+function mostrarOverlayCarga(titulo, subtitulo, segundosEstimados) {
+  const overlay = document.getElementById("overlay-carga");
+  const pctEl = document.getElementById("overlay-pct");
+  const barraEl = document.getElementById("overlay-barra");
+  document.getElementById("overlay-titulo").textContent = titulo;
+  document.getElementById("overlay-subtitulo").textContent = subtitulo;
+
+  if (overlayIntervaloPct) clearInterval(overlayIntervaloPct);
+  let pct = 0;
+  pctEl.textContent = "0";
+  barraEl.style.width = "0%";
+  overlay.classList.add("visible");
+
+  const TECHO = 95;
+  // Ritmo del contador calibrado para llegar al techo (95%) justo
+  // cuando se cumple el tiempo estimado — si el cálculo real tarda
+  // más, el contador simplemente se queda pegado en 95% esperando.
+  const intervaloMs = Math.max(60, (segundosEstimados * 1000 * (TECHO / 100)) / TECHO);
+  overlayIntervaloPct = setInterval(() => {
+    if (pct >= TECHO) return;
+    pct++;
+    pctEl.textContent = String(pct);
+    barraEl.style.width = pct + "%";
+  }, intervaloMs);
+}
+
+function completarOverlayCarga() {
+  if (overlayIntervaloPct) { clearInterval(overlayIntervaloPct); overlayIntervaloPct = null; }
+  const pctEl = document.getElementById("overlay-pct");
+  const barraEl = document.getElementById("overlay-barra");
+  pctEl.textContent = "100";
+  barraEl.style.width = "100%";
+  document.getElementById("overlay-titulo").textContent = "¡Listo!";
+  document.getElementById("overlay-subtitulo").textContent = "Tablero actualizado.";
+  setTimeout(ocultarOverlayCarga, 500);
+}
+
+function ocultarOverlayCarga() {
+  if (overlayIntervaloPct) { clearInterval(overlayIntervaloPct); overlayIntervaloPct = null; }
+  document.getElementById("overlay-carga").classList.remove("visible");
+}
+
 async function refrescarVista() {
   try {
     const resp = await fetch("{% url 'dashboard:api_snapshot' %}", { cache: "no-store" });
@@ -427,16 +532,21 @@ function esperarRecalculoYActualizar(boton, mensajeInicial) {
   boton.disabled = true;
   boton.innerHTML = '<span class="girando">🔄</span> Calculando…';
 
-  // El tiempo de espera activa se ajusta según cuántas divisas hay
-  // tildadas: cada una tarda ~4-5s reales contra MT5 (varias
-  // temporalidades cada una), así que con muchas divisas el cálculo
-  // completo puede superar fácil el minuto — un límite fijo de 40s
-  // (como había antes) se quedaba corto y el usuario veía "no cargó
-  // nada" justo porque el cálculo real todavía no había terminado.
+  // Estimación recalibrada tras paralelizar el cálculo (pool de
+  // procesos persistente, ver dashboard/tasks.py): 10 divisas × 3
+  // temporalidades tardan ~10-11s reales una vez el pool ya está
+  // "caliente" (~15s si es el primer cálculo desde que arrancó el
+  // worker, por el arranque de los procesos). Se deja margen para eso.
   const cantidadDivisas = document.querySelectorAll(".divisa-chk:checked").length || 1;
-  const segundosEstimados = Math.max(40, cantidadDivisas * 6);
-  const maxIntentos = Math.ceil(segundosEstimados / 2);   // intervalo de 2s entre intentos
-  console.log(`[esperarRecalculoYActualizar] ${cantidadDivisas} divisas tildadas -> esperando hasta ~${segundosEstimados}s (${maxIntentos} intentos)`);
+  const segundosEstimados = Math.max(10, 3 + cantidadDivisas * 1.2);
+  const maxIntentos = Math.ceil((segundosEstimados * 3) / 2);   // intervalo de 2s entre intentos, con margen x3 antes de rendirse
+  console.log(`[esperarRecalculoYActualizar] ${cantidadDivisas} divisas tildadas -> estimado ~${segundosEstimados.toFixed(1)}s (esperando hasta ${maxIntentos * 2}s antes de rendirse)`);
+
+  mostrarOverlayCarga(
+    mensajeInicial + "…",
+    "Trayendo velas y recalculando canales — no hace falta recargar la página.",
+    segundosEstimados,
+  );
 
   let intentos = 0;
   intervaloEsperaActivo = setInterval(async () => {
@@ -452,9 +562,11 @@ function esperarRecalculoYActualizar(boton, mensajeInicial) {
       boton.textContent = textoOriginal;
       if (!listo) {
         console.warn("[esperarRecalculoYActualizar] se agoto el tiempo de espera sin detectar el nuevo calculo");
+        ocultarOverlayCarga();
         estado.textContent = "Sigue calculando en segundo plano (con varias divisas puede tardar más de un minuto) — la tabla se va a actualizar sola apenas termine, no hace falta hacer nada.";
       } else {
         console.log("[esperarRecalculoYActualizar] listo, tabla actualizada");
+        completarOverlayCarga();
       }
     }
   }, 2000);

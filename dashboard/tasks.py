@@ -33,6 +33,44 @@ obsoleta por el chequeo de generación y no hace nada cuando le toque
 correr — la cadena la retoma la tarea nueva del usuario.
 """
 import logging
+import os
+import time
+from concurrent.futures import ProcessPoolExecutor
+
+# ── Límite de hilos de numpy/BLAS — DEBE ir antes de cualquier import
+# que traiga numpy (como core.engine.analysis, unas líneas más abajo).
+# numpy/pandas usan una librería interna (OpenBLAS/MKL) que decide
+# cuántos hilos propios abrir la PRIMERA vez que se importa — después de
+# eso, cambiar la variable de entorno ya no tiene efecto. Si esto se
+# fija después (ej. como initializer del pool, llamado recién cuando el
+# proceso ya arrancó), llega tarde: en Windows, ProcessPoolExecutor
+# fuerza una re-importación completa de este archivo durante el
+# bootstrap del proceso hijo, y la import de analysis (línea de más
+# abajo) ya se ejecutó ANTES de que cualquier initializer corra.
+#
+# Sin este límite, cada uno de los SPN_CALC_WORKERS procesos del pool
+# abre por su cuenta varios hilos internos de numpy — con 4 procesos ×
+# varios hilos cada uno, se pisan entre sí peleando por los mismos
+# núcleos en vez de sumar velocidad real.
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+             "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
+# ── Bootstrap de Django para los procesos hijos del pool de cálculo ──
+# En Windows, ProcessPoolExecutor (spawn) vuelve a importar este mismo
+# archivo desde cero en cada proceso nuevo del pool — y en ESE proceso
+# Django todavía no está inicializado (nadie llamó django.setup() ahí,
+# a diferencia del proceso principal de Celery, donde config/celery.py
+# ya lo hace). Sin este bloque, la import de más abajo
+# (`from .models import ...`) explota con "AppRegistryNotReady: Apps
+# aren't loaded yet." apenas arranca cada proceso del pool, y el pool
+# entero queda roto (BrokenProcessPool) — exactamente lo que se vio en
+# el log: 30/30 cálculos fallando y "temporalidades: []" para todo.
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+import django
+from django.apps import apps as _django_apps
+if not _django_apps.ready:
+    django.setup()
 
 from celery import shared_task
 from django.contrib.auth import get_user_model
@@ -47,6 +85,20 @@ User = get_user_model()
 logger = logging.getLogger(__name__)
 
 SEGUNDOS_ENTRE_ACTUALIZACIONES = 300   # 5 minutos, contados desde que termina cada corrida
+
+# Cuántos procesos en paralelo se usan para el CÁLCULO (canales + S-P-N) de
+# cada (divisa, temporalidad) — no tiene nada que ver con la conexión a
+# MT5 (esa sigue siendo una sola, serializada, ver mt5_session). Tope bajo
+# a propósito: esta misma PC corre el terminal MT5 + Django + Redis, así
+# que no conviene acaparar todos los núcleos disponibles.
+SPN_CALC_WORKERS = min(4, os.cpu_count() or 4)
+
+
+def _pool_warmup():
+    """Tarea vacía — solo sirve para medir cuánto tarda un proceso del
+    pool en arrancar (import de Django/numpy/pandas incluido) separado
+    del tiempo del cálculo real."""
+    return True
 
 
 @shared_task(bind=True, ignore_result=True)
@@ -80,38 +132,125 @@ def refrescar_tablero_usuario(self, user_id, generacion_esperada=None):
             _borrar_snapshots_fuera_de_seleccion(user, simbolos, timeframes)
         return
 
-    # ── FASE 1: calcular todo en memoria (esto es lo lento) ──
-    resultados_por_simbolo = {}
-    for simbolo in simbolos:
-        # Chequeo de generación ANTES de cada divisa — acá es donde se
-        # "corta" una tarea vieja: si ya hay un pedido más nuevo del
-        # usuario, no tiene sentido seguir calculando divisas que ese
-        # pedido nuevo va a recalcular de todos modos.
-        user.perfil.refresh_from_db(fields=["watchlist_generacion"])
-        if user.perfil.watchlist_generacion != generacion_esperada:
-            logger.info("[refrescar_tablero_usuario] usuario=%s: generación cambió a mitad de camino (gen %s -> %s) — se corta acá, quedaban %d divisas sin calcular",
-                        user.username, generacion_esperada, user.perfil.watchlist_generacion,
-                        len(simbolos) - len(resultados_por_simbolo))
-            return   # una tarea más nueva ya se está encargando
+    # ── FASE 1a: traer TODAS las velas (esto ya es prácticamente gratis:
+    # ver mt5_session — una sola conexión reutilizada para todo el lote,
+    # en vez de que cada fetch abra/cierre el terminal por su cuenta). ──
+    incremental = analysis.cfg("INCREMENTAL", True)
+    show_both = analysis.cfg("SHOW_BOTH_DIRECTIONS", True)
+    auto_pivot = bool(analysis.cfg("PIVOT_LEN_AUTO", False))
 
-        logger.info("[refrescar_tablero_usuario] calculando %s...", simbolo)
-        try:
-            resultado = analysis.compute_multi_timeframe_spn(symbol=simbolo, timeframes=timeframes)
-        except Exception as e:
-            # Excepción NO ATRAPADA por analysis.py (distinto de un
-            # {"error": "..."} normal) — el caso típico es una divisa
-            # recién agregada que MT5 todavía no sincronizó del todo en
-            # su Market Watch. Se registra COMPLETO (con traceback) para
-            # poder ver la causa exacta, y se convierte en un error
-            # "normal" para esta divisa, sin tumbar las demás.
-            logger.exception("[refrescar_tablero_usuario] EXCEPCION calculando %s", simbolo)
-            resultado = {"error": f"{type(e).__name__}: {e}"}
-        resultados_por_simbolo[simbolo] = resultado
-        if "error" in resultado:
-            logger.warning("[refrescar_tablero_usuario] %s -> ERROR: %s", simbolo, resultado["error"])
-        else:
-            tfs_calculadas = [f.get("timeframe") for f in resultado.get("filas", [])]
-            logger.info("[refrescar_tablero_usuario] %s -> OK, temporalidades: %s", simbolo, tfs_calculadas)
+    trabajos = []          # [(simbolo, tf, data)] — listos para el pool de cálculo
+    resultados_por_simbolo = {}
+    filas_por_simbolo = {simbolo: [] for simbolo in simbolos}
+
+    try:
+        mt5_ctx = analysis.mt5_session()
+        mt5_ctx.__enter__()
+    except analysis.Mt5Unavailable as e:
+        logger.warning("[refrescar_tablero_usuario] usuario=%s: MT5 no disponible (%s) — se marca error en todas las divisas",
+                        user.username, e)
+        mt5_ctx = None
+        error_mt5 = str(e)
+    else:
+        error_mt5 = None
+
+    try:
+        for simbolo in simbolos:
+            user.perfil.refresh_from_db(fields=["watchlist_generacion"])
+            if user.perfil.watchlist_generacion != generacion_esperada:
+                logger.info("[refrescar_tablero_usuario] usuario=%s: generación cambió durante el fetch (gen %s -> %s) — se corta acá",
+                            user.username, generacion_esperada, user.perfil.watchlist_generacion)
+                return
+
+            if error_mt5 is not None:
+                resultados_por_simbolo[simbolo] = {"error": error_mt5}
+                continue
+
+            for tf in timeframes:
+                _t0 = time.perf_counter()
+                try:
+                    data, source = analysis.fetch_mt5_candles(simbolo, tf)
+                except analysis.Mt5Unavailable as e:
+                    filas_por_simbolo[simbolo].append({"timeframe": tf, "error": str(e)})
+                    continue
+                except analysis.Mt5DataError as e:
+                    filas_por_simbolo[simbolo].append({"timeframe": tf, "error": str(e)})
+                    continue
+                except Exception as e:
+                    logger.exception("[refrescar_tablero_usuario] EXCEPCION trayendo %s %s", simbolo, tf)
+                    filas_por_simbolo[simbolo].append({"timeframe": tf, "error": f"{type(e).__name__}: {e}"})
+                    continue
+                logger.info("[refrescar_tablero_usuario] %s %s: fetch=%.3fs (%d velas)",
+                            simbolo, tf, time.perf_counter() - _t0, len(data))
+                trabajos.append((simbolo, tf, data))
+    finally:
+        if mt5_ctx is not None:
+            mt5_ctx.__exit__(None, None, None)
+
+    # Chequeo de generación entre fase de fetch y fase de cálculo — si
+    # cambió, no tiene sentido gastar CPU calculando algo que ya quedó
+    # obsoleto.
+    user.perfil.refresh_from_db(fields=["watchlist_generacion"])
+    if user.perfil.watchlist_generacion != generacion_esperada:
+        logger.info("[refrescar_tablero_usuario] usuario=%s: generación cambió justo después del fetch (gen %s -> %s) — se descarta todo",
+                    user.username, generacion_esperada, user.perfil.watchlist_generacion)
+        return
+
+    # ── FASE 1b: CÁLCULO (canales + S-P-N), repartido entre varios
+    # procesos — esto es lo que en el log de fetch=/calc= resultó ser
+    # ~99% del tiempo total. No toca MT5 para nada, así que acá sí
+    # podemos paralelizar de verdad sin ningún riesgo de datos
+    # corruptos (ver docstring de mt5_session). ──
+    if trabajos:
+        logger.info("[refrescar_tablero_usuario] usuario=%s: calculando %d (divisa, temporalidad) en paralelo con %d procesos...",
+                     user.username, len(trabajos), SPN_CALC_WORKERS)
+        _t_pool0 = time.perf_counter()
+        with ProcessPoolExecutor(max_workers=SPN_CALC_WORKERS) as pool:
+            _t_pool_creado = time.perf_counter()
+
+            # Warm-up: fuerza a que los SPN_CALC_WORKERS procesos arranquen
+            # (con su import completo de Django/numpy/pandas) ANTES de medir
+            # el trabajo real — así separamos "arrancar procesos" de
+            # "calcular" en el log de más abajo.
+            warmup = [pool.submit(_pool_warmup) for _ in range(SPN_CALC_WORKERS)]
+            for f in warmup:
+                f.result()
+            _t_warmup = time.perf_counter()
+
+            futuros = {
+                pool.submit(analysis.compute_tf_row, simbolo, tf, data, incremental, auto_pivot, show_both): simbolo
+                for simbolo, tf, data in trabajos
+            }
+            _t_enviados = time.perf_counter()
+            for futuro in futuros:
+                simbolo = futuros[futuro]
+                try:
+                    fila = futuro.result()
+                except Exception as e:
+                    logger.exception("[refrescar_tablero_usuario] EXCEPCION calculando %s", simbolo)
+                    fila = {"error": f"{type(e).__name__}: {e}"}
+                filas_por_simbolo[simbolo].append(fila)
+            _t_resultados = time.perf_counter()
+        _t_pool_cerrado = time.perf_counter()
+        logger.info(
+            "[refrescar_tablero_usuario] usuario=%s: pool timing — crear_pool=%.3fs "
+            "warmup_%d_procesos=%.3fs enviar_30_tareas=%.3fs esperar_resultados=%.3fs "
+            "cerrar_pool=%.3fs (total=%.3fs)",
+            user.username,
+            _t_pool_creado - _t_pool0,
+            SPN_CALC_WORKERS, _t_warmup - _t_pool_creado,
+            _t_enviados - _t_warmup,
+            _t_resultados - _t_enviados,
+            _t_pool_cerrado - _t_resultados,
+            _t_pool_cerrado - _t_pool0,
+        )
+
+    for simbolo in simbolos:
+        if simbolo in resultados_por_simbolo:
+            continue   # ya tiene un error de MT5 global asignado en fase 1a
+        resultados_por_simbolo[simbolo] = {"symbol": simbolo, "filas": filas_por_simbolo[simbolo]}
+        tfs_calculadas = [f.get("timeframe") for f in filas_por_simbolo[simbolo] if "error" not in f]
+        logger.info("[refrescar_tablero_usuario] %s -> OK, temporalidades: %s", simbolo, tfs_calculadas)
 
     # Último chequeo de generación antes de escribir — por si cambió
     # justo mientras se calculaba la ÚLTIMA divisa.

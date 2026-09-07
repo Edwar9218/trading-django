@@ -15,13 +15,17 @@ original (simulate_incremental, run_auto_channels, compute_kalman_windowed,
 smart_money_flow, evaluar_todos_spn, etc.).
 """
 
+import logging
 import os
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
@@ -231,6 +235,47 @@ def live_bars_needed():
     return max(lookbacks) + 500   # margen de seguridad
 
 
+_mt5_session_depth = 0
+
+
+@contextmanager
+def mt5_session():
+    """Abre la conexión al terminal MT5 UNA sola vez y la mantiene viva
+    para todo un lote de llamadas anidadas (ej. varios símbolos × varias
+    temporalidades en un mismo refresco del tablero).
+
+    Antes, cada fetch_mt5_candles()/fetch_mt5_older_candles() hacía su
+    propio mt5.initialize()/mt5.shutdown() — es decir, abría y cerraba
+    la conexión al terminal en CADA llamada individual. Con 8 divisas ×
+    4 temporalidades eso son 32 aperturas/cierres de conexión por
+    refresco, cuando en realidad alcanza con una sola para todo el lote.
+    Ese overhead repetido (no el cálculo en sí) es lo que hacía tan
+    lento el refresco "divisa por divisa".
+
+    Reentrante vía contador: si ya hay una sesión abierta más afuera
+    (tasks.py envuelve el loop completo con esto), las llamadas internas
+    de fetch_mt5_candles() suman/restan el contador y NO vuelven a tocar
+    la conexión real — la cierra únicamente la llamada más externa. Si
+    se usa una función suelta sin envolver nada (ej. un script chico),
+    sigue funcionando igual que antes: abre y cierra ella sola.
+    """
+    global _mt5_session_depth
+    if mt5 is None:
+        raise Mt5Unavailable("el paquete MetaTrader5 no está instalado en este Python "
+                              "(pip install MetaTrader5 — solo funciona en Windows)")
+    if _mt5_session_depth == 0:
+        if not mt5.initialize():
+            raise Mt5Unavailable(f"no se pudo conectar a MT5 ({mt5.last_error()}) — "
+                                  f"¿está el terminal MetaTrader 5 abierto y con sesión iniciada?")
+    _mt5_session_depth += 1
+    try:
+        yield
+    finally:
+        _mt5_session_depth -= 1
+        if _mt5_session_depth == 0:
+            mt5.shutdown()
+
+
 def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
     """
     Descarga velas EN VIVO desde el terminal MT5 abierto en esta PC.
@@ -255,11 +300,7 @@ def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
                             f"Usa uno de: {', '.join(_TF_MAP)}")
     mt5_tf = getattr(mt5, tf_attr)
 
-    if not mt5.initialize():
-        raise Mt5Unavailable(f"no se pudo conectar a MT5 ({mt5.last_error()}) — "
-                              f"¿está el terminal MetaTrader 5 abierto y con sesión iniciada?")
-
-    try:
+    with mt5_session():
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
             raise Mt5DataError(f"el símbolo '{symbol}' no existe en tu Market Watch "
@@ -329,8 +370,6 @@ def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
 
         etiqueta = f"MT5 en vivo — {symbol} {timeframe.upper()} ({len(out)} velas, hasta {out['datetime'].iloc[-1]})"
         return out, etiqueta
-    finally:
-        mt5.shutdown()
 
 
 def fetch_mt5_older_candles(symbol: str, timeframe: str, antes_de_ts: int, cantidad: int = 500):
@@ -351,10 +390,7 @@ def fetch_mt5_older_candles(symbol: str, timeframe: str, antes_de_ts: int, canti
         raise Mt5DataError(f"timeframe '{timeframe}' no reconocido.")
     mt5_tf = getattr(mt5, tf_attr)
 
-    if not mt5.initialize():
-        raise Mt5Unavailable(f"no se pudo conectar a MT5 ({mt5.last_error()}).")
-
-    try:
+    with mt5_session():
         symbol_info = mt5.symbol_info(symbol)
         if symbol_info is None:
             raise Mt5DataError(f"el símbolo '{symbol}' no existe en tu Market Watch.")
@@ -397,8 +433,6 @@ def fetch_mt5_older_candles(symbol: str, timeframe: str, antes_de_ts: int, canti
              "low": float(r["low"]), "close": float(r["close"])}
             for _, r in raw.iterrows()
         ]
-    finally:
-        mt5.shutdown()
 
 
 def _long_channel(data, incremental, auto_pivot, show_both):
@@ -711,6 +745,93 @@ def compute_analysis(symbol=None, timeframe_override=None, hasta=None, auto_pivo
 ALL_TIMEFRAMES = ["M15", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12", "D1", "W1", "MN1"]
 
 
+def compute_tf_row(symbol, tf, data, incremental, auto_pivot, show_both):
+    """Parte del cálculo que NO toca MT5 (canales + evaluación S-P-N) para
+    UNA temporalidad, con las velas ya traídas de antemano.
+
+    Separada de compute_multi_timeframe_spn a propósito: el log de
+    fetch=/calc= mostró que esta parte es ~99% del tiempo total del
+    refresco del tablero (fetch es prácticamente gratis una vez que la
+    conexión MT5 se reutiliza — ver mt5_session), así que esta función
+    tiene que poder importarse y correr sola en OTRO PROCESO
+    (ProcessPoolExecutor), repartiendo el cálculo de varias divisas entre
+    varios núcleos de CPU en vez de una detrás de la otra. Por eso vive a
+    nivel de módulo (no es un closure ni un método) y solo recibe/devuelve
+    tipos picklables (DataFrame, dict, str, bool).
+    """
+    if data is None or len(data) < 5:
+        return {"timeframe": tf, "error": "Sin velas suficientes."}
+
+    _t1 = time.perf_counter()
+    try:
+        up_ch, dn_ch, _sig, _pivots = _long_channel(data, incremental, auto_pivot, show_both)
+        channels_extra = _extra_channel(data, incremental, auto_pivot, show_both, "SHORT",
+                                         SHORT_DEFAULTS, ("#FFA726", "#AB47BC"))
+    except Exception as e:  # una temporalidad con problemas no debe tumbar el tablero entero
+        return {"timeframe": tf, "error": f"Error al calcular canales: {e}"}
+    _t_calc = time.perf_counter() - _t1
+    logger.info("[compute_tf_row] %s %s: calc=%.3fs (%d velas)", symbol, tf, _t_calc, len(data))
+
+    short_up = next((c for c, _color, _lbl in channels_extra
+                      if _lbl.startswith("Canal corto") and c.direction == "up"), None)
+    short_down = next((c for c, _color, _lbl in channels_extra
+                        if _lbl.startswith("Canal corto") and c.direction == "down"), None)
+    canales_tablero = [
+        ("Canal largo", up_ch),
+        ("Canal largo inverso", dn_ch),
+        ("Canal corto", short_up),
+        ("Canal corto inverso", short_down),
+    ]
+    resultados = cbs.evaluar_todos_spn(
+        data, canales_tablero,
+        atr_length=cfg("BREAKOUT_ATR_LEN", 14),
+        min_displacement_atr=cfg("BREAKOUT_MIN_DISPLACEMENT", 0.15),
+        near_threshold_pct=cfg("SPN_NEAR_THRESHOLD_PCT", 30.0),
+    )
+    celdas = {}
+    clave_por_label = {
+        "Canal largo": "canal_largo",
+        "Canal largo inverso": "canal_largo_inverso",
+        "Canal corto": "canal_corto",
+        "Canal corto inverso": "canal_corto_inverso",
+    }
+    for r in resultados:
+        celdas[clave_por_label[r.label]] = {
+            "estado_label": cbs.ESTADO_LABELS.get(r.estado, r.estado),
+            "estado_color": cbs.ESTADO_COLORS.get(r.estado, "#848e9c"),
+            "distancia_pct": r.distancia_pct,
+            "rotura_label": "Sí" if r.rotura else "No",
+            "rotura_color": cbs.ROTURA_COLOR_SI if r.rotura else cbs.ROTURA_COLOR_NO,
+            "lado_rotura": r.lado_rotura,
+            # Confirmación exacta para el tooltip — el número real
+            # detrás del redondeo de "Distancia" y la razón exacta
+            # por la que "Rotura" dio Sí o No.
+            "confirmacion": {
+                "precio_actual": r.precio_actual,
+                "borde_top": r.borde_top,
+                "borde_bottom": r.borde_bottom,
+                "distancia_exacta_pct": r.distancia_exacta_pct,
+                "cuerpo_vela": r.cuerpo_vela,
+                "displacement": r.displacement,
+                "displacement_minimo": r.displacement_minimo,
+                "atr": r.atr,
+            },
+        }
+    # Canales que no existen para esa temporalidad (ej. "Corto"
+    # desactivado, o no se pudo formar un canal válido) quedan en "—".
+    for clave in ("canal_largo", "canal_largo_inverso", "canal_corto", "canal_corto_inverso"):
+        celdas.setdefault(clave, {"estado_label": "—", "estado_color": "#848e9c",
+                                   "distancia_pct": None, "rotura_label": "—",
+                                   "rotura_color": "#848e9c", "lado_rotura": None,
+                                   "confirmacion": None})
+
+    return {
+        "timeframe": tf,
+        "last_date": data["datetime"].iloc[-1].strftime("%Y-%m-%d %H:%M"),
+        **celdas,
+    }
+
+
 def compute_multi_timeframe_spn(symbol=None, hasta=None, timeframes=None, auto_pivot_override=None):
     if cbs is None:
         return {"error": "channel_breakout_status.py no está disponible junto a servidor.py."}
@@ -726,6 +847,7 @@ def compute_multi_timeframe_spn(symbol=None, hasta=None, timeframes=None, auto_p
 
     filas = []
     for tf in timeframes:
+        _t0 = time.perf_counter()
         try:
             data, source = fetch_mt5_candles(symbol, tf, hasta)
         except Mt5Unavailable as e:
@@ -734,77 +856,9 @@ def compute_multi_timeframe_spn(symbol=None, hasta=None, timeframes=None, auto_p
         except Mt5DataError as e:
             filas.append({"timeframe": tf, "error": str(e)})
             continue
-
-        if len(data) < 5:
-            filas.append({"timeframe": tf, "error": "Sin velas suficientes."})
-            continue
-
-        try:
-            up_ch, dn_ch, _sig, _pivots = _long_channel(data, incremental, auto_pivot, show_both)
-            channels_extra = _extra_channel(data, incremental, auto_pivot, show_both, "SHORT",
-                                             SHORT_DEFAULTS, ("#FFA726", "#AB47BC"))
-        except Exception as e:  # una temporalidad con problemas no debe tumbar el tablero entero
-            filas.append({"timeframe": tf, "error": f"Error al calcular canales: {e}"})
-            continue
-
-        short_up = next((c for c, _color, _lbl in channels_extra
-                          if _lbl.startswith("Canal corto") and c.direction == "up"), None)
-        short_down = next((c for c, _color, _lbl in channels_extra
-                            if _lbl.startswith("Canal corto") and c.direction == "down"), None)
-        canales_tablero = [
-            ("Canal largo", up_ch),
-            ("Canal largo inverso", dn_ch),
-            ("Canal corto", short_up),
-            ("Canal corto inverso", short_down),
-        ]
-        resultados = cbs.evaluar_todos_spn(
-            data, canales_tablero,
-            atr_length=cfg("BREAKOUT_ATR_LEN", 14),
-            min_displacement_atr=cfg("BREAKOUT_MIN_DISPLACEMENT", 0.15),
-            near_threshold_pct=cfg("SPN_NEAR_THRESHOLD_PCT", 30.0),
-        )
-        celdas = {}
-        clave_por_label = {
-            "Canal largo": "canal_largo",
-            "Canal largo inverso": "canal_largo_inverso",
-            "Canal corto": "canal_corto",
-            "Canal corto inverso": "canal_corto_inverso",
-        }
-        for r in resultados:
-            celdas[clave_por_label[r.label]] = {
-                "estado_label": cbs.ESTADO_LABELS.get(r.estado, r.estado),
-                "estado_color": cbs.ESTADO_COLORS.get(r.estado, "#848e9c"),
-                "distancia_pct": r.distancia_pct,
-                "rotura_label": "Sí" if r.rotura else "No",
-                "rotura_color": cbs.ROTURA_COLOR_SI if r.rotura else cbs.ROTURA_COLOR_NO,
-                "lado_rotura": r.lado_rotura,
-                # Confirmación exacta para el tooltip — el número real
-                # detrás del redondeo de "Distancia" y la razón exacta
-                # por la que "Rotura" dio Sí o No.
-                "confirmacion": {
-                    "precio_actual": r.precio_actual,
-                    "borde_top": r.borde_top,
-                    "borde_bottom": r.borde_bottom,
-                    "distancia_exacta_pct": r.distancia_exacta_pct,
-                    "cuerpo_vela": r.cuerpo_vela,
-                    "displacement": r.displacement,
-                    "displacement_minimo": r.displacement_minimo,
-                    "atr": r.atr,
-                },
-            }
-        # Canales que no existen para esa temporalidad (ej. "Corto"
-        # desactivado, o no se pudo formar un canal válido) quedan en "—".
-        for clave in ("canal_largo", "canal_largo_inverso", "canal_corto", "canal_corto_inverso"):
-            celdas.setdefault(clave, {"estado_label": "—", "estado_color": "#848e9c",
-                                       "distancia_pct": None, "rotura_label": "—",
-                                       "rotura_color": "#848e9c", "lado_rotura": None,
-                                       "confirmacion": None})
-
-        filas.append({
-            "timeframe": tf,
-            "last_date": data["datetime"].iloc[-1].strftime("%Y-%m-%d %H:%M"),
-            **celdas,
-        })
+        _t_fetch = time.perf_counter() - _t0
+        logger.info("[compute_multi_timeframe_spn] %s %s: fetch=%.3fs (%d velas)", symbol, tf, _t_fetch, len(data))
+        filas.append(compute_tf_row(symbol, tf, data, incremental, auto_pivot, show_both))
 
     return {"symbol": symbol, "hasta": hasta, "filas": filas}
 
