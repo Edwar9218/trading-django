@@ -1282,7 +1282,7 @@ function crearPanel(rootEl, opciones = {}) {
     const lineEndTime = candles[n - 1].time + barInterval * KN_LINE_BARS;
 
     return {
-      dir, signalTime: candles[signalIdx].time, lineEndTime,
+      dir, signalTime: candles[signalIdx].time, lineEndTime, barInterval,
       entry, sl, tp1, tp2, tp3, tp1Hit, tp2Hit, tp3Hit, slHit,
     };
   }
@@ -1322,11 +1322,20 @@ function crearPanel(rootEl, opciones = {}) {
       // pegada al principio sin importar qué tan lejos esté lineEndTime,
       // porque no hay ninguna otra serie con datos en el medio. Generamos
       // puntos intermedios para que la línea tenga ancho real en pantalla.
-      const nPts = 30;
-      const step = (k.lineEndTime - k.signalTime) / nPts;
+      //
+      // OJO: los puntos intermedios tienen que caer EXACTAMENTE sobre la
+      // misma grilla de tiempo que las velas reales (múltiplos de
+      // barInterval). Antes se dividía el tramo en 30 partes matemáticas
+      // arbitrarias, lo que generaba timestamps que no coincidían con
+      // ninguna vela real: lightweight-charts los trataba como columnas
+      // de tiempo nuevas intercaladas con las velas, y al recalcular el
+      // espaciado de barras terminaba comprimiendo/distorsionando todo lo
+      // demás (velas y canales incluidos).
+      const step = k.barInterval;
+      const nPts = Math.max(1, Math.round((k.lineEndTime - k.signalTime) / step));
       const data = [];
       for (let i = 0; i <= nPts; i++) {
-        data.push({ time: Math.round(k.signalTime + step * i), value: level });
+        data.push({ time: k.signalTime + step * i, value: level });
       }
       s.setData(data);
       knSeriesList.push(s);
