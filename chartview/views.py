@@ -30,6 +30,7 @@ def grafico(request):
         "pref_kalman": perfil.pref_kalman,
         "pref_auto_pivot": perfil.pref_auto_pivot,
         "pref_tablero_canales": perfil.pref_tablero_canales,
+        "pref_kn_signals": perfil.pref_kn_signals,
     })
 
 
@@ -42,6 +43,7 @@ _CAMPOS_PREFERENCIA = {
     "kalman": "pref_kalman",
     "auto_pivot": "pref_auto_pivot",
     "tablero_canales": "pref_tablero_canales",
+    "kn_signals": "pref_kn_signals",
 }
 
 

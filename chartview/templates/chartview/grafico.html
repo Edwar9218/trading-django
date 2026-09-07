@@ -554,6 +554,7 @@
       <span class="sig-signal chip chip-wait">Señal: —</span>
       <span class="sig-kalman">Kalman: —</span>
       <span class="sig-canales">Canales: —</span>
+      <span class="sig-kn">KN: —</span>
     </div>
 
     <div class="channel-toggles">
@@ -562,6 +563,9 @@
       <label class="lbl-corto"><input type="checkbox" class="chk-corto" {% if pref_corto %}checked{% endif %}> Corto</label>
       <label><input type="checkbox" class="chk-relleno" {% if pref_relleno %}checked{% endif %}> Relleno</label>
       <label><input type="checkbox" class="chk-kalman" {% if pref_kalman %}checked{% endif %}> Kalman</label>
+      <label title="Cruce EMA5/EMA13 con TP1/TP2/TP3 y SL calculados por ATR(14) — portado del indicador KN Smart TP SL Signals de TradingView.">
+        <input type="checkbox" class="chk-kn" {% if pref_kn_signals %}checked{% endif %}> KN TP/SL
+      </label>
       <label title="Prueba varios pivot_len para cada canal y se queda con el de mejor calidad — más lento, pero no hace falta afinarlo a mano en config.py">
         <input type="checkbox" class="chk-auto-pivot" {% if pref_auto_pivot %}checked{% endif %}> Pivot auto
       </label>
@@ -683,6 +687,7 @@ function crearPanel(rootEl, opciones = {}) {
   const sigSignal        = $(".sig-signal");
   const sigKalman        = $(".sig-kalman");
   const sigCanales       = $(".sig-canales");
+  const sigKn            = $(".sig-kn");
   const lblLargo         = $(".lbl-largo");
   const lblMediano       = $(".lbl-mediano");
   const lblCorto         = $(".lbl-corto");
@@ -692,6 +697,7 @@ function crearPanel(rootEl, opciones = {}) {
   const chkRelleno       = $(".chk-relleno");
   const chkAutoPivot     = $(".chk-auto-pivot");
   const chkKalman        = $(".chk-kalman");
+  const chkKn            = $(".chk-kn");
   const chkPosicionBoard = $(".chk-posicion-board");
   const posicionBoardEl  = $(".posicion-board");
   const chartContainer   = $(".chart-container");
@@ -716,15 +722,18 @@ function crearPanel(rootEl, opciones = {}) {
   let smfChart = null, smfHist = null, smfLine = null;
   let overlaySeries = [];      // líneas del Kalman
   let channelSeriesList = [];  // líneas de canal (base/par/mid)
+  let knSeriesList = [];       // líneas del indicador KN (entry/SL/TP1-3)
   let currentChannels = [];
   let currentKalman = null;
   let currentPivots = [];
+  let currentKN = null;        // última señal KN calculada sobre las velas cargadas
   let currentPosicionCanales = [];    // tablero: posición del precio respecto a cada canal
   // Estado inicial de estos toggles = lo que Django ya precargó en el
   // checkbox (preferencia guardada del usuario), no un valor fijo — así
   // el estado interno del panel arranca sincronizado con lo que se ve.
   let mostrarPosicionBoard = chkPosicionBoard.checked;
   let mostrarKalman = chkKalman.checked;
+  let mostrarKN = chkKn.checked;
   let lastRealTime = null;
   let loadedCandles = [];
   let symbolActual = null, timeframeActual = null;
@@ -1181,6 +1190,161 @@ function crearPanel(rootEl, opciones = {}) {
     requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
   }
 
+  // ── Indicador "KN - Smart TP SL Signals" (portado desde Pine Script) ──
+  // Cruce EMA rápida/lenta + SL por ATR + 3 objetivos por RR. Todo se
+  // calcula acá mismo, sobre las velas que ya están cargadas — no hace
+  // falta pedirle nada nuevo al servidor. Parámetros iguales a los
+  // defaults del indicador original en TradingView.
+  const KN_EMA_FAST = 5;
+  const KN_EMA_SLOW = 13;
+  const KN_ATR_LEN = 14;
+  const KN_SL_MULT = 1.5;
+  const KN_RR = [1, 2, 3];
+  const KN_LINE_BARS = 30; // cuántas velas se extienden las líneas hacia la derecha
+
+  function knEma(values, length) {
+    const k = 2 / (length + 1);
+    const out = new Array(values.length);
+    out[0] = values[0];
+    for (let i = 1; i < values.length; i++) out[i] = values[i] * k + out[i - 1] * (1 - k);
+    return out;
+  }
+
+  // Calcula la señal más reciente (cruce alcista o bajista) y si sus
+  // TP1/TP2/TP3/SL ya fueron tocados por las velas posteriores dentro
+  // del historial cargado — igual que el "showOnlyLatest" de Pine.
+  function calcularKN(candles) {
+    const n = candles.length;
+    const minBars = Math.max(KN_EMA_SLOW, KN_ATR_LEN) + 2;
+    if (n < minBars) return null;
+
+    const closes = candles.map(c => c.close);
+    const highs = candles.map(c => c.high);
+    const lows = candles.map(c => c.low);
+
+    const emaFast = knEma(closes, KN_EMA_FAST);
+    const emaSlow = knEma(closes, KN_EMA_SLOW);
+
+    // True Range + ATR (suavizado de Wilder, igual que ta.atr en Pine).
+    const tr = new Array(n);
+    tr[0] = highs[0] - lows[0];
+    for (let i = 1; i < n; i++) {
+      tr[i] = Math.max(
+        highs[i] - lows[i],
+        Math.abs(highs[i] - closes[i - 1]),
+        Math.abs(lows[i] - closes[i - 1]),
+      );
+    }
+    const atr = new Array(n).fill(null);
+    if (n >= KN_ATR_LEN) {
+      let seed = 0;
+      for (let i = 0; i < KN_ATR_LEN; i++) seed += tr[i];
+      atr[KN_ATR_LEN - 1] = seed / KN_ATR_LEN;
+      for (let i = KN_ATR_LEN; i < n; i++) {
+        atr[i] = (atr[i - 1] * (KN_ATR_LEN - 1) + tr[i]) / KN_ATR_LEN;
+      }
+    }
+
+    // Buscamos el cruce más reciente, yendo hacia atrás desde la última vela.
+    const minIdx = Math.max(KN_EMA_SLOW, KN_ATR_LEN);
+    let signalIdx = -1, dir = 0;
+    for (let i = n - 1; i >= minIdx; i--) {
+      const crossUp = emaFast[i - 1] <= emaSlow[i - 1] && emaFast[i] > emaSlow[i];
+      const crossDown = emaFast[i - 1] >= emaSlow[i - 1] && emaFast[i] < emaSlow[i];
+      if (crossUp) { signalIdx = i; dir = 1; break; }
+      if (crossDown) { signalIdx = i; dir = -1; break; }
+    }
+    if (signalIdx === -1 || atr[signalIdx] == null) return null;
+
+    const entry = closes[signalIdx];
+    const risk = atr[signalIdx] * KN_SL_MULT;
+    const sl = dir === 1 ? entry - risk : entry + risk;
+    const tp1 = dir === 1 ? entry + risk * KN_RR[0] : entry - risk * KN_RR[0];
+    const tp2 = dir === 1 ? entry + risk * KN_RR[1] : entry - risk * KN_RR[1];
+    const tp3 = dir === 1 ? entry + risk * KN_RR[2] : entry - risk * KN_RR[2];
+
+    let tp1Hit = false, tp2Hit = false, tp3Hit = false, slHit = false;
+    for (let i = signalIdx; i < n; i++) {
+      if (dir === 1) {
+        if (!tp1Hit && highs[i] >= tp1) tp1Hit = true;
+        if (!tp2Hit && highs[i] >= tp2) tp2Hit = true;
+        if (!tp3Hit && highs[i] >= tp3) tp3Hit = true;
+        if (!slHit && lows[i] <= sl) slHit = true;
+      } else {
+        if (!tp1Hit && lows[i] <= tp1) tp1Hit = true;
+        if (!tp2Hit && lows[i] <= tp2) tp2Hit = true;
+        if (!tp3Hit && lows[i] <= tp3) tp3Hit = true;
+        if (!slHit && highs[i] >= sl) slHit = true;
+      }
+    }
+
+    const barInterval = n >= 2 ? (candles[n - 1].time - candles[n - 2].time) : 3600;
+    const lineEndTime = candles[n - 1].time + barInterval * KN_LINE_BARS;
+
+    return {
+      dir, signalTime: candles[signalIdx].time, lineEndTime,
+      entry, sl, tp1, tp2, tp3, tp1Hit, tp2Hit, tp3Hit, slHit,
+    };
+  }
+
+  // Dibuja las líneas ENTRY/SL/TP1-3 desde la barra de la señal hacia la
+  // derecha (mismo criterio que las líneas de line.new() en Pine) y
+  // actualiza el chip de texto "KN: ...". Los marcadores BUY/SELL se
+  // agregan aparte, dentro de dibujarKalmanYMarkers(), para no pisar el
+  // único setMarkers() que admite la serie de velas.
+  function dibujarKN() {
+    knSeriesList.forEach(s => chart.removeSeries(s));
+    knSeriesList = [];
+
+    if (!mostrarKN || !currentKN) {
+      sigKn.textContent = "KN: —";
+      sigKn.className = "sig-kn";
+      requestAnimationFrame(redrawOverlay);
+      return;
+    }
+
+    const k = currentKN;
+    const hitColor = "#26a69a";
+    const slColor = "#ff9800";
+    const slHitColor = "#ef5350";
+    const tpColor = "#29b6f6";
+    const fmt = v => v.toFixed(5);
+
+    const mkLine = (level, color, width, dashed, title) => {
+      const s = chart.addLineSeries({
+        color, lineWidth: width,
+        lineStyle: dashed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid,
+        priceLineVisible: false, lastValueVisible: false, title,
+      });
+      // IMPORTANTE: lightweight-charts espacia las barras según la cantidad
+      // de puntos de datos existentes entre dos tiempos, no según el tiempo
+      // real transcurrido. Con solo 2 puntos (inicio y fin) la línea queda
+      // pegada al principio sin importar qué tan lejos esté lineEndTime,
+      // porque no hay ninguna otra serie con datos en el medio. Generamos
+      // puntos intermedios para que la línea tenga ancho real en pantalla.
+      const nPts = 30;
+      const step = (k.lineEndTime - k.signalTime) / nPts;
+      const data = [];
+      for (let i = 0; i <= nPts; i++) {
+        data.push({ time: Math.round(k.signalTime + step * i), value: level });
+      }
+      s.setData(data);
+      knSeriesList.push(s);
+    };
+
+    mkLine(k.entry, "#9aa0a6", 2, false, "");
+    mkLine(k.sl, k.slHit ? slHitColor : slColor, 2, false, "");
+    mkLine(k.tp1, k.tp1Hit ? hitColor : tpColor, 1, !k.tp1Hit, "");
+    mkLine(k.tp2, k.tp2Hit ? hitColor : tpColor, 1, !k.tp2Hit, "");
+    mkLine(k.tp3, k.tp3Hit ? hitColor : tpColor, 2, false, "");
+
+    const estado = k.slHit ? "SL ✕" : k.tp3Hit ? "TP3 ✓" : k.tp2Hit ? "TP2 ✓" : k.tp1Hit ? "TP1 ✓" : "en curso";
+    sigKn.textContent = `KN: ${k.dir === 1 ? "Buy" : "Sell"} (${estado})`;
+    sigKn.className = "sig-kn chip " + (k.dir === 1 ? "chip-buy" : "chip-sell");
+
+    requestAnimationFrame(redrawOverlay);
+  }
+
   // Dibuja las líneas del Kalman Flow + los marcadores (flips Long/Short +
   // pivotes) — separado de dibujarCanales() para poder togglear el Kalman
   // con el checkbox sin volver a pedirle nada al servidor (currentKalman/
@@ -1215,8 +1379,65 @@ function crearPanel(rootEl, opciones = {}) {
       text: "",
     }));
 
+    if (currentKN && mostrarKN) {
+      markers.push({
+        time: currentKN.signalTime,
+        position: currentKN.dir === 1 ? "belowBar" : "aboveBar",
+        color: currentKN.dir === 1 ? "#00e676" : "#ff5252",
+        shape: currentKN.dir === 1 ? "arrowUp" : "arrowDown",
+        text: currentKN.dir === 1 ? "KN BUY" : "KN SELL",
+      });
+    }
+
     markers.sort((a, b) => a.time - b.time);
     candleSerie.setMarkers(markers);
+  }
+
+  // Dibuja una "bandera" (rectángulo redondeado + triángulo apuntando al
+  // nivel) con el texto indicado, pegada en x al final de la línea del
+  // nivel — igual al estilo de las etiquetas ENTRY/TP/SL de TradingView.
+  function dibujarBanderaKN(x, y, text, bgColor) {
+    if (x == null || y == null) return;
+    const wCanvas = overlayCanvas.clientWidth;
+    const gap = 10; // separación entre el final de la línea del nivel y la bandera
+
+    overlayCtx.save();
+    overlayCtx.font = "bold 11px 'Segoe UI', sans-serif";
+    const textWidth = overlayCtx.measureText(text).width;
+    const boxH = 20, triW = 7, padX = 9, radius = 4;
+    const boxW = textWidth + padX * 2;
+
+    // Que la bandera no se salga del canvas por la derecha ni quede
+    // pegada al borde izquierdo si el zoom la deja muy comprimida.
+    let bx = Math.min(x + gap, wCanvas - boxW - triW - 4);
+    bx = Math.max(bx, triW + 2);
+
+    overlayCtx.fillStyle = bgColor;
+
+    // Triángulo apuntando hacia el nivel
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(bx, y);
+    overlayCtx.lineTo(bx + triW, y - boxH / 2);
+    overlayCtx.lineTo(bx + triW, y + boxH / 2);
+    overlayCtx.closePath();
+    overlayCtx.fill();
+
+    // Cuerpo redondeado con el texto
+    const rx = bx + triW, ry = y - boxH / 2;
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(rx + radius, ry);
+    overlayCtx.arcTo(rx + boxW, ry, rx + boxW, ry + boxH, radius);
+    overlayCtx.arcTo(rx + boxW, ry + boxH, rx, ry + boxH, radius);
+    overlayCtx.arcTo(rx, ry + boxH, rx, ry, radius);
+    overlayCtx.arcTo(rx, ry, rx + boxW, ry, radius);
+    overlayCtx.closePath();
+    overlayCtx.fill();
+
+    overlayCtx.fillStyle = "#0b0e14";
+    overlayCtx.textBaseline = "middle";
+    overlayCtx.textAlign = "left";
+    overlayCtx.fillText(text, rx + padX, y + 0.5);
+    overlayCtx.restore();
   }
 
   function redrawOverlay() {
@@ -1244,6 +1465,39 @@ function crearPanel(rootEl, opciones = {}) {
           overlayCtx.fill();
         }
       });
+
+    if (mostrarKN && currentKN) {
+      const k = currentKN;
+      const xStart = chart.timeScale().timeToCoordinate(k.signalTime);
+      const xEndRaw = chart.timeScale().timeToCoordinate(k.lineEndTime);
+      const yEntry = candleSerie.priceToCoordinate(k.entry);
+      const ySl = candleSerie.priceToCoordinate(k.sl);
+      const yTp1 = candleSerie.priceToCoordinate(k.tp1);
+      const yTp2 = candleSerie.priceToCoordinate(k.tp2);
+      const yTp3 = candleSerie.priceToCoordinate(k.tp3);
+      if (xStart !== null && yEntry !== null && ySl !== null && yTp3 !== null) {
+        const xEnd = xEndRaw !== null ? xEndRaw : w;
+        overlayCtx.fillStyle = "rgba(38,166,154,0.10)"; // zona ganancia (entry -> tp3)
+        overlayCtx.fillRect(xStart, Math.min(yEntry, yTp3), xEnd - xStart, Math.abs(yTp3 - yEntry));
+        overlayCtx.fillStyle = "rgba(239,83,80,0.10)"; // zona pérdida (entry -> sl)
+        overlayCtx.fillRect(xStart, Math.min(yEntry, ySl), xEnd - xStart, Math.abs(ySl - yEntry));
+
+        // ── Banderas con el valor de cada nivel, pegadas al final de la
+        // línea (estilo TradingView) en vez de solo verse en el eje derecho.
+        const fmtFlag = v => v.toFixed(5);
+        const hitColorFlag = "#26a69a";
+        const slColorFlag = "#ff9800";
+        const slHitColorFlag = "#ef5350";
+        const tpColorFlag = "#29b6f6";
+        const xFlag = Math.min(xEnd, w - 4);
+
+        dibujarBanderaKN(xFlag, yEntry, `ENTRY ${fmtFlag(k.entry)}`, "#9aa0a6");
+        dibujarBanderaKN(xFlag, ySl, k.slHit ? "SL ✕" : `SL ${fmtFlag(k.sl)}`, k.slHit ? slHitColorFlag : slColorFlag);
+        if (yTp1 !== null) dibujarBanderaKN(xFlag, yTp1, k.tp1Hit ? "TP1 ✓" : `TP1 ${fmtFlag(k.tp1)}`, k.tp1Hit ? hitColorFlag : tpColorFlag);
+        if (yTp2 !== null) dibujarBanderaKN(xFlag, yTp2, k.tp2Hit ? "TP2 ✓" : `TP2 ${fmtFlag(k.tp2)}`, k.tp2Hit ? hitColorFlag : tpColorFlag);
+        dibujarBanderaKN(xFlag, yTp3, k.tp3Hit ? "TP3 ✓" : `TP3 ${fmtFlag(k.tp3)}`, k.tp3Hit ? hitColorFlag : tpColorFlag);
+      }
+    }
 
     if (lastRealTime !== null) {
       const xNow = chart.timeScale().timeToCoordinate(lastRealTime);
@@ -1346,7 +1600,9 @@ function crearPanel(rootEl, opciones = {}) {
 
     currentKalman = data.kalman || null;
     currentPivots = data.pivots || [];
+    currentKN = calcularKN(data.candles);
     dibujarKalmanYMarkers();
+    dibujarKN();
 
     chart.timeScale().fitContent();
     requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
@@ -1558,7 +1814,7 @@ function crearPanel(rootEl, opciones = {}) {
       grid:    { vertLines:{color:"#1e222d"}, horzLines:{color:"#1e222d"} },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
       rightPriceScale: { borderColor:"#2a2e39" },
-      timeScale: { borderColor:"#2a2e39", timeVisible:true, secondsVisible:false },
+      timeScale: { borderColor:"#2a2e39", timeVisible:true, secondsVisible:false, rightOffset: 45 },
     });
 
     candleSerie = chart.addCandlestickSeries({
@@ -1796,6 +2052,13 @@ function crearPanel(rootEl, opciones = {}) {
     chkKalman.addEventListener("change", e => {
       mostrarKalman = e.target.checked; dibujarKalmanYMarkers();
       guardarPreferencia("kalman", e.target.checked);
+    });
+
+    chkKn.addEventListener("change", e => {
+      mostrarKN = e.target.checked;
+      dibujarKalmanYMarkers(); // refresca el marker BUY/SELL combinado
+      dibujarKN();             // refresca líneas entry/SL/TP + zonas
+      guardarPreferencia("kn_signals", e.target.checked);
     });
     chkAutoPivot.addEventListener("change", e => {
       guardarPreferencia("auto_pivot", e.target.checked);

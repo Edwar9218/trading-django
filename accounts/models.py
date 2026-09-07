@@ -25,6 +25,10 @@ class PerfilUsuario(models.Model):
     pref_kalman = models.BooleanField(default=True)
     pref_auto_pivot = models.BooleanField(default=False)
     pref_tablero_canales = models.BooleanField(default=False)
+    # Indicador "KN - Smart TP SL Signals" (cruce EMA5/EMA13 + TP/SL por
+    # ATR) portado desde Pine Script — se calcula en el navegador con las
+    # mismas velas ya cargadas, no pide nada nuevo al servidor.
+    pref_kn_signals = models.BooleanField(default=False)
 
     # ── Generación del watchlist ──
     # Se incrementa cada vez que el usuario guarda una selección nueva o
