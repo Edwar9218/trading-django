@@ -1278,11 +1278,38 @@ function crearPanel(rootEl, opciones = {}) {
       }
     }
 
-    const barInterval = n >= 2 ? (candles[n - 1].time - candles[n - 2].time) : 3600;
-    const lineEndTime = candles[n - 1].time + barInterval * KN_LINE_BARS;
+    // IMPORTANTE: NO se puede asumir un intervalo fijo entre velas. En
+    // timeframes como D1 el mercado no opera fines de semana/feriados, así
+    // que hay saltos de 1 día mezclados con saltos de 2-3 días. Si se usa
+    // un solo "barInterval" constante (p.ej. tomado de las últimas 2
+    // velas) para generar la grilla de toda la línea, se desalinea en cada
+    // salto y distorsiona los canales (el bug volvía a aparecer en D1
+    // aunque ya no pasaba en H1 dentro de rangos cortos sin fin de semana).
+    //
+    // Solución: para el tramo histórico (signalIdx -> última vela) usamos
+    // los timestamps REALES de las velas, así siempre coinciden exacto
+    // con la grilla del gráfico. Para el tramo de proyección hacia el
+    // futuro (donde no hay velas reales) usamos un intervalo típico
+    // (mediana de los últimos gaps, ignorando saltos de fin de semana).
+    const realTimes = candles.slice(signalIdx, n).map(c => c.time);
+
+    const lookback = Math.min(60, n - 1);
+    const gaps = [];
+    for (let i = n - lookback; i < n; i++) {
+      if (i > 0) gaps.push(candles[i].time - candles[i - 1].time);
+    }
+    gaps.sort((a, b) => a - b);
+    const typicalInterval = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 3600;
+
+    const lastRealTime = candles[n - 1].time;
+    const futureTimes = [];
+    for (let i = 1; i <= KN_LINE_BARS; i++) futureTimes.push(lastRealTime + typicalInterval * i);
+
+    const allTimes = realTimes.concat(futureTimes);
+    const lineEndTime = futureTimes[futureTimes.length - 1];
 
     return {
-      dir, signalTime: candles[signalIdx].time, lineEndTime, barInterval,
+      dir, signalTime: candles[signalIdx].time, lineEndTime, allTimes,
       entry, sl, tp1, tp2, tp3, tp1Hit, tp2Hit, tp3Hit, slHit,
     };
   }
@@ -1324,19 +1351,16 @@ function crearPanel(rootEl, opciones = {}) {
       // puntos intermedios para que la línea tenga ancho real en pantalla.
       //
       // OJO: los puntos intermedios tienen que caer EXACTAMENTE sobre la
-      // misma grilla de tiempo que las velas reales (múltiplos de
-      // barInterval). Antes se dividía el tramo en 30 partes matemáticas
-      // arbitrarias, lo que generaba timestamps que no coincidían con
-      // ninguna vela real: lightweight-charts los trataba como columnas
-      // de tiempo nuevas intercaladas con las velas, y al recalcular el
-      // espaciado de barras terminaba comprimiendo/distorsionando todo lo
-      // demás (velas y canales incluidos).
-      const step = k.barInterval;
-      const nPts = Math.max(1, Math.round((k.lineEndTime - k.signalTime) / step));
-      const data = [];
-      for (let i = 0; i <= nPts; i++) {
-        data.push({ time: k.signalTime + step * i, value: level });
-      }
+      // misma grilla de tiempo que las velas reales. Usar un solo intervalo
+      // fijo (barInterval) para toda la línea no sirve: en timeframes como
+      // D1 el mercado no opera fines de semana/feriados, así que hay
+      // saltos de 1 día mezclados con saltos de 2-3 días, y un paso
+      // constante se desalinea en cada salto. Por eso k.allTimes ya trae,
+      // desde calcularKN(), los timestamps REALES de cada vela para el
+      // tramo histórico (perfectamente alineados) y solo usa un intervalo
+      // típico para el tramo de proyección hacia el futuro (donde no hay
+      // velas reales con las que desalinearse).
+      const data = k.allTimes.map(t => ({ time: t, value: level }));
       s.setData(data);
       knSeriesList.push(s);
     };
