@@ -39,8 +39,15 @@ def home(request):
     """
     divisas = list(DivisaSeguida.objects.filter(usuario=request.user).values_list("simbolo", flat=True))
     timeframes = list(TemporalidadSeguida.objects.filter(usuario=request.user).values_list("timeframe", flat=True))
+    # Unimos la lista fija de sugeridas con las que el usuario haya agregado
+    # a mano (vía "+ Agregar") y que todavía no estén ahí, para que el
+    # checkbox de cualquier divisa que siga apareciendo se muestre siempre
+    # arriba en "Divisas seguidas" — antes solo se listaban las sugeridas,
+    # así que una divisa custom (ej. EURNZD) quedaba activa en el tablero
+    # de abajo pero invisible en la lista de checkboxes de arriba.
+    divisas_para_mostrar = list(analysis.DIVISAS_SUGERIDAS) + [d for d in divisas if d not in analysis.DIVISAS_SUGERIDAS]
     return render(request, "dashboard/home.html", {
-        "divisas_sugeridas": analysis.DIVISAS_SUGERIDAS,
+        "divisas_sugeridas": divisas_para_mostrar,
         "todos_los_timeframes": analysis.ALL_TIMEFRAMES,
         "mis_divisas": divisas,
         "mis_timeframes": timeframes,
