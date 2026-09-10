@@ -299,6 +299,25 @@ def refrescar_tablero_usuario(self, user_id, generacion_esperada=None):
                     defaults={"datos": fila, "error": fila.get("error", "")},
                 )
 
+    # RED DE SEGURIDAD — no debería encontrar nada acá, porque el bloque
+    # de arriba ya borra la fila timeframe="*" de cada divisa que se
+    # calculó bien. Pero si algún día una regresión reintroduce el
+    # fantasma (ej. alguien agrega un nuevo "continue" antes del borrado,
+    # o un camino de escritura nuevo que no pasa por acá), esto lo saca a
+    # la luz en el log del worker en vez de esperar a que un usuario
+    # mande una captura de pantalla confundido.
+    simbolos_ok = {s for s, r in resultados_por_simbolo.items() if "error" not in r}
+    fantasmas = TableroSnapshot.objects.filter(
+        usuario=user, simbolo__in=simbolos_ok, timeframe="*",
+    ).values_list("simbolo", flat=True)
+    if fantasmas:
+        logger.warning(
+            "[refrescar_tablero_usuario] usuario=%s (gen %s): quedaron snapshots de error "
+            "fantasma para divisas que SÍ se calcularon bien recién: %s — revisar el borrado "
+            "de FASE 2, esto no debería pasar",
+            user.username, generacion_esperada, list(fantasmas),
+        )
+
     logger.info("[refrescar_tablero_usuario] usuario=%s (gen %s): fase 2 (escritura) completada",
                 user.username, generacion_esperada)
 

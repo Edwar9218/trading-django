@@ -62,13 +62,53 @@ def api_snapshot(request):
     refrescar la vista con lo último que haya calculado Celery.
     """
     snapshots = TableroSnapshot.objects.filter(usuario=request.user).order_by("simbolo", "timeframe")
-    por_simbolo = {}
+
+    # Dos pasadas: primero junto todo por símbolo (necesito ver TODAS las
+    # filas de una divisa, no solo la de error, antes de decidir si ese
+    # error todavía aplica).
+    filas_por_simbolo = {}
+    error_snap_por_simbolo = {}
     for snap in snapshots:
-        por_simbolo.setdefault(snap.simbolo, {"symbol": snap.simbolo, "filas": [], "error": None})
+        filas_por_simbolo.setdefault(snap.simbolo, [])
         if snap.error and snap.timeframe == "*":
-            por_simbolo[snap.simbolo]["error"] = snap.error
+            error_snap_por_simbolo[snap.simbolo] = snap
         elif snap.datos:
-            por_simbolo[snap.simbolo]["filas"].append(snap.datos)
+            filas_por_simbolo[snap.simbolo].append(snap)
+
+    # RED DE SEGURIDAD — capa extra sobre el fix de tasks.py que borra la
+    # fila "*" en cuanto una divisa vuelve a calcularse bien: si por
+    # cualquier motivo (una regresión futura, una corrida que se cortó a
+    # mitad de camino, etc.) esa fila quedara fantasma, acá se detecta
+    # comparando su calculado_en contra el de los timeframes reales de la
+    # MISMA divisa. Si hay datos reales más NUEVOS que el error, el error
+    # quedó obsoleto — se ignora para el usuario y se deja un warning en
+    # el log para que no pase desapercibido (en vez de aparecer meses
+    # después como una captura de pantalla confundida).
+    por_simbolo = {}
+    for simbolo, filas_snaps in filas_por_simbolo.items():
+        por_simbolo[simbolo] = {"symbol": simbolo, "filas": [f.datos for f in filas_snaps], "error": None}
+
+        error_snap = error_snap_por_simbolo.pop(simbolo, None)
+        if error_snap is None:
+            continue
+
+        mas_reciente_real = max((f.calculado_en for f in filas_snaps), default=None)
+        if mas_reciente_real is not None and mas_reciente_real > error_snap.calculado_en:
+            logger.warning(
+                "[api_snapshot] usuario=%s simbolo=%s: snapshot de error obsoleto ignorado "
+                "(error calculado_en=%s, timeframes reales calculado_en=%s) — no debería pasar "
+                "tras el fix de FASE 2 en tasks.py, revisar si algo lo está reintroduciendo",
+                request.user.username, simbolo, error_snap.calculado_en, mas_reciente_real,
+            )
+            continue
+
+        por_simbolo[simbolo]["error"] = error_snap.error
+
+    # Divisas que SOLO tienen fila de error (sin ningún timeframe real
+    # calculado todavía) — no quedaron en filas_por_simbolo porque nunca
+    # entraron al setdefault de arriba.
+    for simbolo, error_snap in error_snap_por_simbolo.items():
+        por_simbolo[simbolo] = {"symbol": simbolo, "filas": [], "error": error_snap.error}
 
     ultima = snapshots.order_by("-calculado_en").first()
     response = JsonResponse({
