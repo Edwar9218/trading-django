@@ -31,6 +31,7 @@ def grafico(request):
         "pref_auto_pivot": perfil.pref_auto_pivot,
         "pref_tablero_canales": perfil.pref_tablero_canales,
         "pref_kn_signals": perfil.pref_kn_signals,
+        "pref_sr_avanzado": perfil.pref_sr_avanzado,
     })
 
 
@@ -44,6 +45,7 @@ _CAMPOS_PREFERENCIA = {
     "auto_pivot": "pref_auto_pivot",
     "tablero_canales": "pref_tablero_canales",
     "kn_signals": "pref_kn_signals",
+    "sr_avanzado": "pref_sr_avanzado",
 }
 
 

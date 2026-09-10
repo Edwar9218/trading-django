@@ -29,6 +29,11 @@ class PerfilUsuario(models.Model):
     # ATR) portado desde Pine Script — se calcula en el navegador con las
     # mismas velas ya cargadas, no pide nada nuevo al servidor.
     pref_kn_signals = models.BooleanField(default=False)
+    # Indicador "Advanced Support and Resistance with Reversal" — pivotes
+    # confirmados, ruptura, retest de rol invertido (R→S/S→R) e
+    # invalidación. Igual que KN, se calcula en el navegador con las
+    # mismas velas ya cargadas.
+    pref_sr_avanzado = models.BooleanField(default=False)
 
     # ── Generación del watchlist ──
     # Se incrementa cada vez que el usuario guarda una selección nueva o

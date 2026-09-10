@@ -566,6 +566,9 @@
       <label title="Cruce EMA5/EMA13 con TP1/TP2/TP3 y SL calculados por ATR(14) — portado del indicador KN Smart TP SL Signals de TradingView.">
         <input type="checkbox" class="chk-kn" {% if pref_kn_signals %}checked{% endif %}> KN TP/SL
       </label>
+      <label title="Soportes/resistencias por pivotes confirmados, con ruptura, retest de rol invertido (R→S / S→R) e invalidación — portado del indicador Advanced Support and Resistance with Reversal de TradingView.">
+        <input type="checkbox" class="chk-sr" {% if pref_sr_avanzado %}checked{% endif %}> S/R Avanzado
+      </label>
       <label title="Prueba varios pivot_len para cada canal y se queda con el de mejor calidad — más lento, pero no hace falta afinarlo a mano en config.py">
         <input type="checkbox" class="chk-auto-pivot" {% if pref_auto_pivot %}checked{% endif %}> Pivot auto
       </label>
@@ -698,6 +701,7 @@ function crearPanel(rootEl, opciones = {}) {
   const chkAutoPivot     = $(".chk-auto-pivot");
   const chkKalman        = $(".chk-kalman");
   const chkKn            = $(".chk-kn");
+  const chkSr            = $(".chk-sr");
   const chkPosicionBoard = $(".chk-posicion-board");
   const posicionBoardEl  = $(".posicion-board");
   const chartContainer   = $(".chart-container");
@@ -723,10 +727,12 @@ function crearPanel(rootEl, opciones = {}) {
   let overlaySeries = [];      // líneas del Kalman
   let channelSeriesList = [];  // líneas de canal (base/par/mid)
   let knSeriesList = [];       // líneas del indicador KN (entry/SL/TP1-3)
+  let srSeriesList = [];       // líneas del indicador S/R Avanzado (niveles + flips)
   let currentChannels = [];
   let currentKalman = null;
   let currentPivots = [];
   let currentKN = null;        // última señal KN calculada sobre las velas cargadas
+  let currentSR = null;        // niveles S/R Avanzado calculados sobre las velas cargadas
   let currentPosicionCanales = [];    // tablero: posición del precio respecto a cada canal
   // Estado inicial de estos toggles = lo que Django ya precargó en el
   // checkbox (preferencia guardada del usuario), no un valor fijo — así
@@ -734,6 +740,7 @@ function crearPanel(rootEl, opciones = {}) {
   let mostrarPosicionBoard = chkPosicionBoard.checked;
   let mostrarKalman = chkKalman.checked;
   let mostrarKN = chkKn.checked;
+  let mostrarSR = chkSr.checked;
   let lastRealTime = null;
   let loadedCandles = [];
   let symbolActual = null, timeframeActual = null;
@@ -1314,6 +1321,207 @@ function crearPanel(rootEl, opciones = {}) {
     };
   }
 
+  // ══════════════════════════════════════════════════════════
+  // S/R Avanzado — port del indicador Pine "Advanced Support and
+  // Resistance with Reversal | AlphaPine". Igual que KN, se calcula acá
+  // en el navegador sobre las velas ya cargadas (no pide nada nuevo al
+  // servidor). Réplica bar-a-bar de la máquina de estados del Pine
+  // (ACTIVE → BROKEN → RETESTED) para que los índices de ruptura/retest
+  // queden en la misma barra que en TradingView, en vez de recalcular
+  // todo "en bloque" de forma no causal.
+  //
+  // Simplificaciones respecto al Pine original (para no duplicar cada
+  // input del indicador acá): confirmación de ruptura y de retest SIEMPRE
+  // por cierre confirmado (equivalente a "Close" en ambos combos, que es
+  // el modo por defecto), sin filtro de mecha dominante y sin buffer de
+  // ATR en la ruptura (breakout_atr_buf = 0). El resto de la lógica
+  // (fusión por ATR, tope de niveles, expiración por lookback,
+  // invalidación de flips) es un calco 1:1.
+  const SR_PIVOT_LENGTH    = 10;
+  const SR_LOOKBACK        = 200;
+  const SR_MAX_LEVELS      = 30;
+  const SR_MERGE_ATR_MULT  = 0.5;
+  const SR_ATR_LEN         = 14;
+  // Equivalentes a los inputs show_reversals / show_breakouts /
+  // show_failures del Pine. Apagados por defecto para un gráfico limpio
+  // (igual al indicador visto en TradingView): sin flechas de ruptura,
+  // sin cruces "X" de invalidación y sin niveles de rol invertido
+  // (R→S/S→R) que se superponen con R1-R4/S1-S4. Un nivel roto se queda
+  // como línea corta sin etiqueta (igual que en TradingView) en vez de
+  // seguir "vivo" como flip.
+  const SR_SHOW_REVERSALS  = false;
+  const SR_SHOW_BREAKOUTS  = false;
+  const SR_SHOW_FAILURES   = false;
+
+  function srAtrWilder(highs, lows, closes, length) {
+    const n = highs.length;
+    const tr = new Array(n);
+    tr[0] = highs[0] - lows[0];
+    for (let i = 1; i < n; i++) {
+      tr[i] = Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
+    }
+    const atr = new Array(n).fill(null);
+    if (n >= length) {
+      let seed = 0;
+      for (let i = 0; i < length; i++) seed += tr[i];
+      atr[length - 1] = seed / length;
+      for (let i = length; i < n; i++) atr[i] = (atr[i - 1] * (length - 1) + tr[i]) / length;
+    }
+    return atr;
+  }
+
+  // high[i] es pivote alto (o low[i] pivote bajo) si es el extremo de la
+  // ventana [i-len, i+len] — equivalente práctico a ta.pivothigh/pivotlow.
+  function srIsPivotHigh(highs, i, len) {
+    if (i < len || i > highs.length - 1 - len) return false;
+    const v = highs[i];
+    for (let k = i - len; k <= i + len; k++) if (k !== i && highs[k] > v) return false;
+    return true;
+  }
+  function srIsPivotLow(lows, i, len) {
+    if (i < len || i > lows.length - 1 - len) return false;
+    const v = lows[i];
+    for (let k = i - len; k <= i + len; k++) if (k !== i && lows[k] < v) return false;
+    return true;
+  }
+
+  const SR_STATE_ACTIVE = 0, SR_STATE_BROKEN = 1, SR_STATE_RETESTED = 2;
+
+  function calcularSR(candles) {
+    const n = candles.length;
+    const minBars = SR_PIVOT_LENGTH * 2 + 2;
+    if (n < minBars) return null;
+
+    const highs = candles.map(c => c.high);
+    const lows = candles.map(c => c.low);
+    const closes = candles.map(c => c.close);
+    const opens = candles.map(c => c.open);
+    const atr = srAtrWilder(highs, lows, closes, SR_ATR_LEN);
+
+    // Un "tipo" (resistencia o soporte) = un juego de arrays alineados
+    // por índice, igual que los pares indexes_r/indexes_s del Pine.
+    const mkType = () => ({
+      idx: [], confirmIdx: [], price: [], zoneTop: [], zoneBottom: [],
+      state: [], breakoutIdx: [],
+    });
+    const res = mkType(), sup = mkType();
+    const flips = []; // { price, zoneTop, zoneBottom, origIdx, breakoutIdx, isSupport, failIdx }
+    const breakoutMarkers = [], failureMarkers = [];
+
+    function processType(t, isRes, i) {
+      // Expirar niveles cuyo pivote original ya quedó fuera del lookback.
+      for (let k = t.idx.length - 1; k >= 0; k--) {
+        if (i - t.idx[k] > SR_LOOKBACK) {
+          t.idx.splice(k, 1); t.confirmIdx.splice(k, 1); t.price.splice(k, 1);
+          t.zoneTop.splice(k, 1); t.zoneBottom.splice(k, 1); t.state.splice(k, 1); t.breakoutIdx.splice(k, 1);
+        }
+      }
+
+      // Registrar un pivote recién confirmado en esta barra.
+      const pivotIdx = i - SR_PIVOT_LENGTH;
+      const isPivot = isRes ? srIsPivotHigh(highs, pivotIdx, SR_PIVOT_LENGTH) : srIsPivotLow(lows, pivotIdx, SR_PIVOT_LENGTH);
+      if (isPivot) {
+        const pivotPrice = isRes ? highs[pivotIdx] : lows[pivotIdx];
+        const zTop = isRes ? pivotPrice : Math.max(opens[pivotIdx], closes[pivotIdx]);
+        const zBot = isRes ? Math.min(opens[pivotIdx], closes[pivotIdx]) : pivotPrice;
+        let mergeOk = true;
+        if (atr[i] != null) {
+          for (let k = 0; k < t.price.length; k++) {
+            if (t.state[k] === SR_STATE_ACTIVE && Math.abs(t.price[k] - pivotPrice) <= atr[i] * SR_MERGE_ATR_MULT) { mergeOk = false; break; }
+          }
+        }
+        if (mergeOk) {
+          t.idx.push(pivotIdx); t.confirmIdx.push(i); t.price.push(pivotPrice);
+          t.zoneTop.push(zTop); t.zoneBottom.push(zBot); t.state.push(SR_STATE_ACTIVE); t.breakoutIdx.push(null);
+          if (t.idx.length > SR_MAX_LEVELS) {
+            t.idx.shift(); t.confirmIdx.shift(); t.price.shift(); t.zoneTop.shift(); t.zoneBottom.shift(); t.state.shift(); t.breakoutIdx.shift();
+          }
+        }
+      }
+
+      // Rupturas y retests (rol invertido), por cierre confirmado.
+      for (let k = 0; k < t.idx.length; k++) {
+        const st = t.state[k];
+        if (st === SR_STATE_ACTIVE) {
+          const breakLevel = isRes ? t.zoneTop[k] : t.zoneBottom[k];
+          const crossed = isRes ? closes[i] > breakLevel : closes[i] < breakLevel;
+          if (crossed) {
+            t.state[k] = SR_STATE_BROKEN; t.breakoutIdx[k] = i;
+            if (SR_SHOW_BREAKOUTS) breakoutMarkers.push({ idx: i, isRes });
+          }
+        } else if (st === SR_STATE_BROKEN && SR_SHOW_REVERSALS && i > t.breakoutIdx[k]) {
+          const zTop = t.zoneTop[k], zBot = t.zoneBottom[k];
+          const touched = highs[i] >= zBot && lows[i] <= zTop;
+          const heldNewSide = isRes ? closes[i] >= zTop : closes[i] <= zBot;
+          if (touched && heldNewSide) {
+            t.state[k] = SR_STATE_RETESTED;
+            flips.push({
+              price: t.price[k], zoneTop: zTop, zoneBottom: zBot,
+              origIdx: t.idx[k], breakoutIdx: t.breakoutIdx[k], isSupport: isRes, failIdx: null,
+            });
+            if (flips.length > SR_MAX_LEVELS * 2) flips.shift();
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      // Invalidar flips con cierre confirmado más allá del lado lejano de su zona.
+      for (let k = flips.length - 1; k >= 0; k--) {
+        const f = flips[k];
+        const expired = i - f.origIdx > SR_LOOKBACK;
+        const failed = f.isSupport ? closes[i] < f.zoneBottom : closes[i] > f.zoneTop;
+        if (failed && f.failIdx === null && SR_SHOW_FAILURES) {
+          failureMarkers.push({ idx: i, isSupport: f.isSupport });
+        }
+        if (expired || failed) flips.splice(k, 1);
+      }
+      processType(res, true, i);
+      processType(sup, false, i);
+    }
+
+    // Serializar para dibujar: línea desde la confirmación hasta la
+    // última barra (o hasta la ruptura, si ya no está activo), tiempos
+    // reales de las velas (igual criterio que channel_payload/KN, para
+    // no desalinearse en D1 por los huecos de fin de semana).
+    const lastIdx = n - 1;
+    function serializeType(t, prefix) {
+      const out = [];
+      for (let k = 0; k < t.idx.length; k++) {
+        const st = t.state[k];
+        const endIdx = st === SR_STATE_ACTIVE ? lastIdx : t.breakoutIdx[k];
+        if (endIdx <= t.confirmIdx[k]) continue;
+        const points = candles.slice(t.confirmIdx[k], endIdx + 1).map(c => ({ time: c.time, value: t.price[k] }));
+        const isValid = st === SR_STATE_ACTIVE && (prefix === "R" ? t.price[k] > closes[lastIdx] : t.price[k] < closes[lastIdx]);
+        out.push({ price: t.price[k], points, endTime: candles[endIdx].time, active: st === SR_STATE_ACTIVE, valid: isValid });
+      }
+      return out;
+    }
+    const resistances = serializeType(res, "R");
+    const supports = serializeType(sup, "S");
+
+    // Numeración R1..Rn (más cerca del precio primero) / S1..Sn — igual
+    // que el sort() + drawPriceLabel() del Pine.
+    const validRes = resistances.filter(l => l.valid).sort((a, b) => a.price - b.price);
+    const validSup = supports.filter(l => l.valid).sort((a, b) => b.price - a.price);
+    validRes.forEach((l, i) => { l.label = `R${i + 1}: ${l.price.toFixed(5)}`; });
+    validSup.forEach((l, i) => { l.label = `S${i + 1}: ${l.price.toFixed(5)}`; });
+
+    const flipsOut = flips.map(f => ({
+      price: f.price,
+      points: candles.slice(f.breakoutIdx, lastIdx + 1).map(c => ({ time: c.time, value: f.price })),
+      endTime: candles[lastIdx].time,
+      isSupport: f.isSupport,
+      label: (f.isSupport ? "RS: " : "SR: ") + f.price.toFixed(5),
+    }));
+
+    return {
+      resistances, supports, flips: flipsOut,
+      breakoutMarkers: breakoutMarkers.map(m => ({ time: candles[m.idx].time, isRes: m.isRes })),
+      failureMarkers: failureMarkers.map(m => ({ time: candles[m.idx].time, isSupport: m.isSupport })),
+    };
+  }
+
   // Dibuja las líneas ENTRY/SL/TP1-3 desde la barra de la señal hacia la
   // derecha (mismo criterio que las líneas de line.new() en Pine) y
   // actualiza el chip de texto "KN: ...". Los marcadores BUY/SELL se
@@ -1422,8 +1630,61 @@ function crearPanel(rootEl, opciones = {}) {
       });
     }
 
+    if (currentSR && mostrarSR) {
+      currentSR.breakoutMarkers.forEach(m => markers.push({
+        time: m.time,
+        position: m.isRes ? "belowBar" : "aboveBar",
+        color: m.isRes ? "#2962ff" : "#ff9800", // res_breakout_col / sup_breakout_col del Pine
+        shape: m.isRes ? "arrowUp" : "arrowDown",
+        text: "",
+      }));
+      currentSR.failureMarkers.forEach(m => markers.push({
+        time: m.time,
+        position: m.isSupport ? "belowBar" : "aboveBar",
+        color: m.isSupport ? "#ef5350" : "#00e676", // support_fail_col / resistance_fail_col del Pine
+        shape: "circle",
+        text: m.isSupport ? "S ✕" : "R ✕",
+      }));
+    }
+
     markers.sort((a, b) => a.time - b.time);
     candleSerie.setMarkers(markers);
+  }
+
+  // Dibuja las líneas de niveles S/R (resistencia/soporte activos y ya
+  // rotos, más los flips R→S / S→R) — mismo mecanismo que dibujarKN():
+  // una addLineSeries por nivel, con un punto por vela real para que
+  // quede perfectamente alineada con el eje de tiempo. Las etiquetas
+  // (banderas R1/S1/RS/SR) se dibujan aparte, en redrawOverlay(), porque
+  // van sobre el canvas de overlay, no sobre una serie del chart.
+  function dibujarSR() {
+    srSeriesList.forEach(s => chart.removeSeries(s));
+    srSeriesList = [];
+
+    if (!mostrarSR || !currentSR) {
+      requestAnimationFrame(redrawOverlay);
+      return;
+    }
+
+    const resColor = "#ef5350";      // resistance_line_col por defecto del Pine
+    const supColor = "#26a69a";      // support_line_col por defecto del Pine
+    const rsColor = "#26a69a";       // R→S (nuevo rol = soporte)
+    const srColor = "#ef5350";       // S→R (nuevo rol = resistencia)
+
+    const mkLevelLine = (points, color, width) => {
+      if (points.length < 1) return;
+      const s = chart.addLineSeries({
+        color, lineWidth: width, priceLineVisible: false, lastValueVisible: false, title: "",
+      });
+      s.setData(points.length === 1 ? [points[0], points[0]] : points);
+      srSeriesList.push(s);
+    };
+
+    currentSR.resistances.forEach(l => mkLevelLine(l.points, resColor, l.active ? 1 : 1));
+    currentSR.supports.forEach(l => mkLevelLine(l.points, supColor, l.active ? 1 : 1));
+    currentSR.flips.forEach(f => mkLevelLine(f.points, f.isSupport ? rsColor : srColor, 2));
+
+    requestAnimationFrame(redrawOverlay);
   }
 
   // Dibuja una "bandera" (rectángulo redondeado + triángulo apuntando al
@@ -1532,6 +1793,26 @@ function crearPanel(rootEl, opciones = {}) {
       }
     }
 
+    // Banderas de precio (R1/S1/...) del indicador S/R Avanzado — comentadas
+    // por pedido explícito (por ahora no se necesitan). Las líneas de los
+    // niveles se siguen dibujando igual (ver dibujarSR()); esto solo apaga
+    // las etiquetas con el precio. Para reactivarlas, poner esta bandera en
+    // true de nuevo.
+    const SR_MOSTRAR_BANDERAS = false;
+    if (SR_MOSTRAR_BANDERAS && mostrarSR && currentSR) {
+      const resFlagColor = "#ef5350", supFlagColor = "#26a69a";
+      const rsFlagColor = "#26a69a", srFlagColor = "#ef5350";
+      const drawLevelFlag = (level, color) => {
+        const x = chart.timeScale().timeToCoordinate(level.endTime);
+        const y = candleSerie.priceToCoordinate(level.price);
+        if (x === null || y === null) return;
+        dibujarBanderaKN(Math.min(x, w - 4), y, level.label, color);
+      };
+      currentSR.resistances.filter(l => l.valid).forEach(l => drawLevelFlag(l, resFlagColor));
+      currentSR.supports.filter(l => l.valid).forEach(l => drawLevelFlag(l, supFlagColor));
+      currentSR.flips.forEach(f => drawLevelFlag(f, f.isSupport ? rsFlagColor : srFlagColor));
+    }
+
     if (lastRealTime !== null) {
       const xNow = chart.timeScale().timeToCoordinate(lastRealTime);
       if (xNow !== null) {
@@ -1634,8 +1915,10 @@ function crearPanel(rootEl, opciones = {}) {
     currentKalman = data.kalman || null;
     currentPivots = data.pivots || [];
     currentKN = calcularKN(data.candles);
+    currentSR = calcularSR(data.candles);
     dibujarKalmanYMarkers();
     dibujarKN();
+    dibujarSR();
 
     chart.timeScale().fitContent();
     requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
@@ -2092,6 +2375,12 @@ function crearPanel(rootEl, opciones = {}) {
       dibujarKalmanYMarkers(); // refresca el marker BUY/SELL combinado
       dibujarKN();             // refresca líneas entry/SL/TP + zonas
       guardarPreferencia("kn_signals", e.target.checked);
+    });
+    chkSr.addEventListener("change", e => {
+      mostrarSR = e.target.checked;
+      dibujarKalmanYMarkers(); // refresca marcadores de ruptura/invalidación
+      dibujarSR();             // refresca líneas de niveles + flips
+      guardarPreferencia("sr_avanzado", e.target.checked);
     });
     chkAutoPivot.addEventListener("change", e => {
       guardarPreferencia("auto_pivot", e.target.checked);

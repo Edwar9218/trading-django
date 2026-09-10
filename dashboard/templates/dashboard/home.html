@@ -83,38 +83,67 @@
   #overlay-carga .titulo { font-size: 15px; font-weight: 600; color: #d1d4dc; margin-bottom: 4px; }
   #overlay-carga .subtitulo { font-size: 12.5px; color: #848e9c; max-width: 320px; }
 
-  #tabla-wrap { overflow-x: auto; position: relative; }
-  table { border-collapse: collapse; width: 100%; font-size: 12px; }
-  th, td { border: 1px solid #2a2e39; padding: 7px 9px; text-align: center; white-space: nowrap; }
-  thead th { background: #1e222d; }
-  /* ── Encabezado fijo (hecho a mano con JS, no con CSS position:sticky
-     — sticky resultó frágil en tablas con scroll horizontal: el
-     "overflow-x: auto" del contenedor termina arrastrando también el eje
-     vertical por una regla del propio CSS, y el navegador "pega" el
-     header contra el contenedor equivocado). Este bloque es un clon
-     idéntico del encabezado, oculto por defecto, que solo se muestra —
-     en position:fixed, con sus columnas alineadas en tiempo real — justo
-     cuando el encabezado real sale de pantalla por arriba. ──
-  #tabla-header-fijo {
-    display: none;
-    position: fixed;
-    top: 0;
-    z-index: 999;
-    overflow: hidden;
-    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  /* ── Tablero en tarjetas: 1 tarjeta por divisa, con una mini-tabla
+     adentro (TF + 4 canales) en vez de 1 sola tabla gigante con todas
+     las divisas mezcladas — más fácil de leer y comparar de un
+     vistazo (ver refrescarVista(), arma las tarjetas por JS). ── */
+  .tarjetas-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    gap: 16px;
   }
-  #tabla-header-fijo table { border-collapse: collapse; margin: 0; }
-  #tabla-header-fijo thead th { background: #1e222d; }
-  thead th.grupo { background: #1e222d; color: #d9a441; font-weight: 700; }
-  thead th.sub { background: #1a1e29; color: #848e9c; font-weight: 500; font-size: 10.5px; }
+  .tarjeta {
+    border: 1px solid #2a2e39;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #12151f;
+    display: flex;
+    flex-direction: column;
+  }
+  .tarjeta-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid #2a2e39;
+  }
+  .tarjeta-avatar {
+    width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 10.5px; font-weight: 800; color: #0d1017;
+  }
+  .tarjeta-nombre { font-weight: 800; font-size: 14px; letter-spacing: .02em; }
+  .tarjeta-body { padding: 2px 8px 6px; overflow-x: auto; }
+  .tarjeta-body table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .tarjeta-body th, .tarjeta-body td { border: none; border-bottom: 1px solid #1e222d; padding: 8px 5px; text-align: center; white-space: nowrap; }
+  .tarjeta-body thead th { color: #848e9c; font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: .03em; }
+  .tarjeta-body thead th:first-child { text-align: left; }
+  .tarjeta-body tbody tr:last-child td { border-bottom: none; }
+  .tarjeta-error { padding: 16px; color: #ff5252; font-style: italic; font-size: 12.5px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
   td.divisa { text-align: left; font-weight: 800; border-left: 4px solid transparent; }
-  td.tf { text-align: left; font-weight: 600; color: #d1d4dc; background: #1a1e29; }
+  td.tf { text-align: left; font-weight: 600; color: #d1d4dc; }
   td.tf-link { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-decoration-color: #363c4e; }
   td.tf-link:hover { color: #2962ff; text-decoration-color: #2962ff; }
-  td.badge span { display: inline-block; padding: 2px 8px; border-radius: 10px; font-weight: 600; font-size: 10.5px; white-space: nowrap; }
   td.error-cell { color: #ff5252; font-style: italic; text-align: left; }
-  tr.divisa-separador td { border-top: 2px solid #363c4e; }
   #vacio { color: #848e9c; padding: 30px; text-align: center; }
+
+  /* ── Leyenda S-P-N e íconos de estado por canal ──
+     Un único ícono + "dist% · símbolo de rotura" por canal, en vez de
+     3 columnas de texto (Estado/Dist./Rotura). */
+  .leyenda { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: center; font-size: 12.5px; color: #c7cbd1; margin-bottom: 12px; }
+  .leyenda-item { display: flex; align-items: center; gap: 7px; }
+  .icono-estado {
+    width: 15px; height: 15px; border-radius: 50%; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 8.5px; line-height: 1; color: #fff; font-weight: 700;
+  }
+  .icono-estado.resistencia { background: #e5484d; }
+  .icono-estado.soporte { background: #00a63e; }
+  .icono-estado.neutro { background: transparent; border: 1.5px solid #5b6472; }
+  td.canal { padding: 8px 6px; }
+  .canal-inner { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .canal-sub { font-size: 10.5px; color: #848e9c; font-variant-numeric: tabular-nums; }
 </style>
 {% endblock %}
 
@@ -153,38 +182,13 @@
 
 <div style="margin-top:20px">
   <div id="estado-actualizacion"><span class="punto"></span>Esperando primer cálculo…</div>
-  <div id="tabla-wrap" style="display:none">
-    <table id="tabla">
-      <thead>
-        <tr>
-          <th rowspan="2">Divisa</th>
-          <th rowspan="2">Temporalidad</th>
-          <th class="grupo" colspan="3">Canal largo</th>
-          <th class="grupo" colspan="3">Canal largo inverso</th>
-          <th class="grupo" colspan="3">Canal corto</th>
-          <th class="grupo" colspan="3">Canal corto inverso</th>
-        </tr>
-        <tr>
-          <th class="sub">Estado</th><th class="sub">Dist.</th><th class="sub">Rotura</th>
-          <th class="sub">Estado</th><th class="sub">Dist.</th><th class="sub">Rotura</th>
-          <th class="sub">Estado</th><th class="sub">Dist.</th><th class="sub">Rotura</th>
-          <th class="sub">Estado</th><th class="sub">Dist.</th><th class="sub">Rotura</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
+  <div class="leyenda">
+    <span class="leyenda-item"><span class="icono-estado resistencia">↓</span> Resistencia</span>
+    <span class="leyenda-item"><span class="icono-estado soporte">↑</span> Soporte</span>
+    <span class="leyenda-item"><span class="icono-estado neutro"></span> Neutro</span>
   </div>
+  <div id="tarjetas-wrap" class="tarjetas-grid" style="display:none"></div>
   <div id="vacio" style="display:none">Todavía no hay datos calculados para tu selección — Celery los arma cada 5 minutos (o guardá la selección para forzar el primer cálculo ya).</div>
-</div>
-
-<!-- Clon del encabezado, oculto por defecto — lo maneja JS, se muestra
-     en position:fixed exactamente cuando el encabezado real sale de
-     pantalla por arriba, con sus columnas alineadas a las de la tabla
-     real en tiempo real. Ver actualizarHeaderFijo() más abajo. -->
-<div id="tabla-header-fijo">
-  <table>
-    <thead id="tabla-header-fijo-thead"></thead>
-  </table>
 </div>
 
 <script>
@@ -220,15 +224,35 @@ function formatearTooltip(conf) {
   ].join("\n");
 }
 
+// Antes esto armaba 3 <td> por canal (Estado / Dist. / Rotura, con
+// badges de texto tipo "Resistencia" / "Sí (arriba)"). Ahora se
+// condensa todo en 1 sola celda por canal — un ícono redondo (rojo con
+// flecha abajo = Resistencia, verde con flecha arriba = Soporte, hueco
+// = Neutro) y debajo "dist% · símbolo de rotura" — para que el tablero
+// quede en 6 columnas totales en vez de 14. Ver leyenda arriba de la
+// tabla (clases .leyenda / .icono-estado en el <style>).
 function celdaHtml(c) {
-  if (!c) return `<td class="badge"><span>—</span></td><td>—</td><td class="badge"><span>—</span></td>`;
+  if (!c) return `<td class="canal"><div class="canal-inner"><span class="icono-estado neutro"></span><span class="canal-sub">—</span></div></td>`;
+
   const dist = (c.distancia_pct === null || c.distancia_pct === undefined) ? "—" : c.distancia_pct + "%";
-  const lado = c.lado_rotura ? ` (${c.lado_rotura})` : "";
   const tooltip = formatearTooltip(c.confirmacion);
+
+  const labelLower = (c.estado_label || "").toLowerCase();
+  let claseEstado = "neutro", flecha = "";
+  if (labelLower === "resistencia") { claseEstado = "resistencia"; flecha = "↓"; }
+  else if (labelLower === "soporte") { claseEstado = "soporte"; flecha = "↑"; }
+
+  let simbolo = "–", colorSimbolo = "#848e9c";
+  if (c.lado_rotura === "arriba") { simbolo = "↑"; colorSimbolo = "#00c896"; }
+  else if (c.lado_rotura === "abajo") { simbolo = "↓"; colorSimbolo = "#ff5252"; }
+
   return `
-    <td class="badge" title="${tooltip}"><span style="background:${hexToRgba(c.estado_color, 0.18)}; color:${c.estado_color}; ${tooltip ? 'cursor:help;' : ''}">${c.estado_label}</span></td>
-    <td title="${tooltip}" style="${tooltip ? 'cursor:help;' : ''}">${dist}</td>
-    <td class="badge" title="${tooltip}"><span style="background:${hexToRgba(c.rotura_color, 0.18)}; color:${c.rotura_color}; ${tooltip ? 'cursor:help;' : ''}">${c.rotura_label}${lado}</span></td>`;
+    <td class="canal" title="${tooltip}" style="${tooltip ? 'cursor:help;' : ''}">
+      <div class="canal-inner">
+        <span class="icono-estado ${claseEstado}">${flecha}</span>
+        <span class="canal-sub">${dist} · <span style="color:${colorSimbolo}">${simbolo}</span></span>
+      </div>
+    </td>`;
 }
 
 function abrirEnGrafico(symbol, timeframe) {
@@ -237,108 +261,6 @@ function abrirEnGrafico(symbol, timeframe) {
 }
 
 let ultimaVistaTimestamp = null;   // se actualiza cada vez que refrescarVista() trae datos nuevos
-
-// ── Encabezado fijo (JS puro, ver comentario en el <style>) ──
-const tablaHeaderFijo = document.getElementById("tabla-header-fijo");
-const tablaHeaderFijoThead = document.getElementById("tabla-header-fijo-thead");
-const tablaHeaderFijoTable = tablaHeaderFijo.querySelector("table");
-let ultimoHtmlHeaderClonado = "";
-
-// Copia el HTML del encabezado real al clon (solo cuando cambió, para no
-// destruir/reconstruir el DOM en cada scroll) y le da a cada columna el
-// mismo ancho en píxeles que tiene la columna real correspondiente —
-// midiendo la primera fila del cuerpo de la tabla, que es la que define
-// el ancho real de cada columna (table-layout: auto).
-function clonarEncabezadoSiCambio() {
-  const theadReal = document.querySelector("#tabla thead");
-  if (!theadReal) return;
-  if (theadReal.innerHTML === ultimoHtmlHeaderClonado) return;
-
-  ultimoHtmlHeaderClonado = theadReal.innerHTML;
-  tablaHeaderFijoThead.innerHTML = theadReal.innerHTML;
-
-  const primeraFilaBody = document.querySelector("#tabla tbody tr");
-  if (!primeraFilaBody) return;
-  const anchosBody = Array.from(primeraFilaBody.children).map(td => td.getBoundingClientRect().width);
-  // Si la primera fila resultó ser una fila de error (menos columnas de
-  // lo esperado), no se puede calcular el ancho por columna con
-  // precisión — se deja el clon sin anchos explícitos antes que aplicar
-  // números inventados.
-  if (anchosBody.length < 14) return;
-
-  // Fila 1 del header: Divisa (col 0), Temporalidad (col 1), y 4 grupos
-  // de canal que cada uno cubre 3 columnas del body (colspan=3).
-  const filaHeader1 = tablaHeaderFijoThead.children[0];
-  const filaHeader2 = tablaHeaderFijoThead.children[1];
-  if (filaHeader1 && filaHeader1.children[0]) filaHeader1.children[0].style.width = anchosBody[0] + "px";
-  if (filaHeader1 && filaHeader1.children[1]) filaHeader1.children[1].style.width = anchosBody[1] + "px";
-  for (let g = 0; g < 4; g++) {
-    const thGrupo = filaHeader1 && filaHeader1.children[2 + g];
-    if (thGrupo) {
-      const ancho = anchosBody[2 + g * 3] + anchosBody[3 + g * 3] + anchosBody[4 + g * 3];
-      thGrupo.style.width = ancho + "px";
-    }
-  }
-  // Fila 2 del header: los 12 "Estado/Dist./Rotura", 1 a 1 con las
-  // columnas 2..13 del body.
-  if (filaHeader2) {
-    Array.from(filaHeader2.children).forEach((th, i) => {
-      th.style.width = anchosBody[2 + i] + "px";
-    });
-  }
-}
-
-// Se llama en cada scroll/resize (con requestAnimationFrame para no
-// recalcular más de una vez por frame). Decide si mostrar el clon fijo,
-// y si sí, lo alinea exactamente con la posición y el scroll horizontal
-// actuales de la tabla real.
-let rafPendiente = false;
-function actualizarHeaderFijo() {
-  if (rafPendiente) return;
-  rafPendiente = true;
-  requestAnimationFrame(() => {
-    rafPendiente = false;
-    const theadReal = document.querySelector("#tabla thead");
-    const tablaWrap = document.getElementById("tabla-wrap");
-    if (!theadReal || !tablaWrap || tablaWrap.style.display === "none") {
-      tablaHeaderFijo.style.display = "none";
-      return;
-    }
-
-    const rectThead = theadReal.getBoundingClientRect();
-    const rectWrap = tablaWrap.getBoundingClientRect();
-
-    // Se muestra el clon SOLO mientras el encabezado real ya salió por
-    // arriba de la pantalla (rectThead.top < 0) pero la tabla en sí
-    // todavía tiene algo visible más abajo (rectWrap.bottom > 0) — así
-    // desaparece solo al llegar al final de la tabla, y vuelve a
-    // desaparecer solo al subir lo suficiente como para ver el
-    // encabezado real de nuevo (por eso "vuelve a la normalidad" al
-    // subir, sin código extra para ese caso).
-    //
-    // Todo el posicionamiento se fuerza por JS con !important-level de
-    // prioridad (estilo inline gana siempre sobre la hoja de estilos) —
-    // así no depende de que ninguna otra regla CSS del documento pueda
-    // llegar a pisar el position:fixed por accidente.
-    if (rectThead.top < 0 && rectWrap.bottom > rectThead.height) {
-      clonarEncabezadoSiCambio();
-      tablaHeaderFijo.style.position = "fixed";
-      tablaHeaderFijo.style.top = "0px";
-      tablaHeaderFijo.style.bottom = "auto";
-      tablaHeaderFijo.style.display = "block";
-      tablaHeaderFijo.style.left = rectWrap.left + "px";
-      tablaHeaderFijo.style.width = rectWrap.width + "px";
-      tablaHeaderFijo.style.zIndex = "999";
-      tablaHeaderFijoTable.style.transform = `translateX(${-tablaWrap.scrollLeft}px)`;
-    } else {
-      tablaHeaderFijo.style.display = "none";
-    }
-  });
-}
-
-window.addEventListener("scroll", actualizarHeaderFijo, { passive: true });
-window.addEventListener("resize", actualizarHeaderFijo);
-document.getElementById("tabla-wrap").addEventListener("scroll", actualizarHeaderFijo, { passive: true });
 
 // ── Overlay de carga a pantalla completa con contador de % ──
 // El % es SIMULADO (no viene del servidor paso a paso): sube parejo
@@ -392,20 +314,52 @@ function ocultarOverlayCarga() {
   document.getElementById("overlay-carga").classList.remove("visible");
 }
 
+// Arma la mini-tabla de adentro de una tarjeta (TF + 4 columnas de
+// canal), o un mensaje de error si esa divisa entera falló.
+function tarjetaCuerpoHtml(res) {
+  if (res.error) {
+    return `<div class="tarjeta-error">${res.error}</div>`;
+  }
+  const filasHtml = (res.filas || []).map(fila => {
+    if (fila.error) {
+      return `<tr><td class="tf">${fila.timeframe}</td><td class="error-cell" colspan="4">${fila.error}</td></tr>`;
+    }
+    return `<tr>
+      <td class="tf tf-link" onclick="abrirEnGrafico('${res.symbol}', '${fila.timeframe}')">${fila.timeframe} ↗</td>
+      ${celdaHtml(fila.canal_largo)}
+      ${celdaHtml(fila.canal_largo_inverso)}
+      ${celdaHtml(fila.canal_corto)}
+      ${celdaHtml(fila.canal_corto_inverso)}
+    </tr>`;
+  }).join("");
+
+  return `<table>
+    <thead>
+      <tr>
+        <th>TF</th>
+        <th>Canal largo</th>
+        <th>Canal largo inverso</th>
+        <th>Canal corto</th>
+        <th>Canal corto inverso</th>
+      </tr>
+    </thead>
+    <tbody>${filasHtml}</tbody>
+  </table>`;
+}
+
 async function refrescarVista() {
   try {
     const resp = await fetch("{% url 'dashboard:api_snapshot' %}", { cache: "no-store" });
     const data = await resp.json();
     console.log("[refrescarVista] respuesta cruda del servidor:", data);
 
-    const tbody = document.querySelector("#tabla tbody");
-    const tablaWrap = document.getElementById("tabla-wrap");
+    const tarjetasWrap = document.getElementById("tarjetas-wrap");
     const vacio = document.getElementById("vacio");
     const estado = document.getElementById("estado-actualizacion");
 
     if (!data.resultados || !data.resultados.length) {
-      console.log("[refrescarVista] sin resultados todavia (tabla vacia)");
-      tablaWrap.style.display = "none";
+      console.log("[refrescarVista] sin resultados todavia (tablero vacio)");
+      tarjetasWrap.style.display = "none";
       vacio.style.display = "block";
       return;
     }
@@ -414,45 +368,25 @@ async function refrescarVista() {
     data.resultados.forEach((res, idx) => {
       console.log(`[refrescarVista] procesando divisa "${res.symbol}":`, res);
       const color = PALETTE[idx % PALETTE.length];
-      const bg = hexToRgba(color, 0.09);
-      const estiloFila = `style="background:${bg}"`;
-      const estiloDivisa = `style="background:${bg}; border-left-color:${color}; color:${color};"`;
-      if (res.error) {
-        console.warn(`[refrescarVista] "${res.symbol}" tiene error general:`, res.error);
-        html += `<tr class="divisa-separador" ${estiloFila}><td class="divisa" ${estiloDivisa}>${res.symbol}</td><td class="error-cell" colspan="13">${res.error}</td></tr>`;
-        return;
-      }
-      (res.filas || []).forEach((fila, i) => {
-        const sep = i === 0 ? " divisa-separador" : "";
-        if (fila.error) {
-          console.warn(`[refrescarVista] "${res.symbol}" ${fila.timeframe} tiene error:`, fila.error);
-          html += `<tr class="${sep}" ${estiloFila}><td class="divisa" ${estiloDivisa}>${i === 0 ? res.symbol : ""}</td><td class="tf">${fila.timeframe}</td><td class="error-cell" colspan="12">${fila.error}</td></tr>`;
-          return;
-        }
-        html += `<tr class="${sep}" ${estiloFila}>
-          <td class="divisa" ${estiloDivisa}>${i === 0 ? res.symbol : ""}</td>
-          <td class="tf tf-link" onclick="abrirEnGrafico('${res.symbol}', '${fila.timeframe}')">${fila.timeframe} ↗</td>
-          ${celdaHtml(fila.canal_largo)}
-          ${celdaHtml(fila.canal_largo_inverso)}
-          ${celdaHtml(fila.canal_corto)}
-          ${celdaHtml(fila.canal_corto_inverso)}
-        </tr>`;
-      });
+      html += `
+        <div class="tarjeta" style="border-color:${hexToRgba(color, 0.45)}">
+          <div class="tarjeta-header" style="background:linear-gradient(135deg, ${hexToRgba(color, 0.32)}, ${hexToRgba(color, 0.08)})">
+            <span class="tarjeta-avatar" style="background:${color}">${res.symbol.slice(0, 2)}</span>
+            <span class="tarjeta-nombre" style="color:${color}">${res.symbol}</span>
+          </div>
+          <div class="tarjeta-body">${tarjetaCuerpoHtml(res)}</div>
+        </div>`;
     });
-    tbody.innerHTML = html;
-    tablaWrap.style.display = "block";
+    tarjetasWrap.innerHTML = html;
+    tarjetasWrap.style.display = "grid";
     vacio.style.display = "none";
-    // Los datos (y por lo tanto los anchos de columna) recién cambiaron —
-    // se fuerza a re-clonar el encabezado en el próximo scroll/resize.
-    ultimoHtmlHeaderClonado = "";
-    actualizarHeaderFijo();
 
     if (data.ultima_actualizacion) {
       ultimaVistaTimestamp = data.ultima_actualizacion;
       const fecha = new Date(data.ultima_actualizacion);
       estado.innerHTML = `<span class="punto"></span>Última actualización: ${fecha.toLocaleTimeString()} (Celery recalcula cada 5 min)`;
     }
-    console.log("[refrescarVista] tabla actualizada OK");
+    console.log("[refrescarVista] tarjetas actualizadas OK");
   } catch (e) {
     // Antes esto tapaba CUALQUIER error (de red o de JavaScript al armar
     // la tabla) con el mismo mensaje generico "No se pudo conectar" — lo
