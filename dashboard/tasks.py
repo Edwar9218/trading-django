@@ -279,6 +279,17 @@ def refrescar_tablero_usuario(self, user_id, generacion_esperada=None):
                 )
                 continue
 
+            # El cálculo salió bien: si esta divisa tenía un error general
+            # (MT5 caído, etc.) de una corrida anterior, esa fila
+            # "timeframe='*'" queda fantasma para siempre si no se borra
+            # acá — _borrar_snapshots_fuera_de_seleccion() nunca la toca
+            # mientras la divisa siga en el watchlist, y el frontend
+            # (views.api_snapshot) la sigue mostrando aunque los
+            # timeframes reales ya tengan datos frescos.
+            TableroSnapshot.objects.filter(
+                usuario=user, simbolo=simbolo, timeframe="*",
+            ).delete()
+
             for fila in resultado.get("filas", []):
                 tf = fila.get("timeframe")
                 if tf not in timeframes_actuales:
