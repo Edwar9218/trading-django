@@ -83,6 +83,36 @@
   #overlay-carga .titulo { font-size: 15px; font-weight: 600; color: #d1d4dc; margin-bottom: 4px; }
   #overlay-carga .subtitulo { font-size: 12.5px; color: #848e9c; max-width: 320px; }
 
+  /* ── "Pestaña única" (mismo patrón que WhatsApp Web) ──
+     Solo UNA pestaña/ventana por navegador queda "activa": la única
+     que pollea api_snapshot y dispara recalcular_ahora. El resto
+     muestra esta pantalla en vez de correr todo por duplicado (que es
+     justo lo que generaba tareas de Celery repetidas al abrir el
+     .bat con una pestaña vieja todavía abierta). Ver TAB_LOCK más
+     abajo en el <script>. */
+  #overlay-otra-pestana {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+    background: #0d1017;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+  }
+  #overlay-otra-pestana.visible { display: flex; }
+  #overlay-otra-pestana .icono { font-size: 40px; margin-bottom: 14px; }
+  #overlay-otra-pestana .titulo { font-size: 16px; font-weight: 600; color: #d1d4dc; margin-bottom: 6px; }
+  #overlay-otra-pestana .subtitulo { font-size: 13px; color: #848e9c; max-width: 360px; line-height: 1.5; }
+  #overlay-otra-pestana .btn-usar-aca {
+    margin-top: 18px;
+    background: #2962ff; border: none; border-radius: 6px; color: #fff;
+    font-size: 12.5px; font-weight: 600; padding: 8px 18px; cursor: pointer;
+  }
+  #overlay-otra-pestana .btn-usar-aca:hover { background: #1e4fd6; }
+
   /* ── Tablero en tarjetas: 1 tarjeta por divisa, con una mini-tabla
      adentro (TF + 4 canales) en vez de 1 sola tabla gigante con todas
      las divisas mezcladas — más fácil de leer y comparar de un
@@ -155,6 +185,16 @@
   <div class="subtitulo" id="overlay-subtitulo">Trayendo velas y recalculando canales — no hace falta recargar la página.</div>
 </div>
 
+<div id="overlay-otra-pestana">
+  <div class="icono">🔒</div>
+  <div class="titulo">Este tablero ya está abierto en otra pestaña</div>
+  <div class="subtitulo">
+    Para no disparar el mismo recálculo dos veces, solo una pestaña queda activa a la vez.
+    Cerrá esta pestaña, o la otra, para seguir acá.
+  </div>
+  <button class="btn-usar-aca" id="btn-usar-esta-pestana">Usar esta pestaña en su lugar</button>
+</div>
+
 <div class="picker-section">
   <div class="picker-title">Divisas seguidas</div>
   <div class="picker-row" id="divisas-row">
@@ -208,6 +248,44 @@ function getCookie(name) {
   return v ? v.pop() : '';
 }
 const CSRF = getCookie('csrftoken');
+
+// ── "Pestaña única" (mismo patrón que WhatsApp Web) ──────────────────
+// localStorage es compartido entre todas las pestañas/ventanas del
+// MISMO navegador y origen — se usa como "posta": la pestaña activa
+// va renovando un timestamp cada HEARTBEAT_MS; si otra pestaña ve que
+// ese timestamp está muy viejo (LOCK_VENCE_MS), asume que la activa
+// se cerró y toma la posta ella. Esto evita el problema real que
+// vimos en los logs: abrir el .bat con una pestaña vieja todavía
+// abierta hacía que las DOS pollearan y las DOS dispararan
+// recalcular_ahora() al cargar, duplicando tareas de Celery.
+const TAB_LOCK_KEY = "tablero_pestana_activa";
+const TAB_ID = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+                                                     : `${Date.now()}-${Math.random()}`;
+const HEARTBEAT_MS = 2000;
+const LOCK_VENCE_MS = 5000;
+let heartbeatInterval = null;
+let reintentoLockInterval = null;
+
+function leerLock() {
+  try { return JSON.parse(localStorage.getItem(TAB_LOCK_KEY) || "null"); } catch { return null; }
+}
+function lockVigenteYAjeno(lock) {
+  return lock && lock.tabId !== TAB_ID && (Date.now() - lock.ts) < LOCK_VENCE_MS;
+}
+function tomarLock() {
+  localStorage.setItem(TAB_LOCK_KEY, JSON.stringify({ tabId: TAB_ID, ts: Date.now() }));
+}
+function soltarLockSiEsMio() {
+  const actual = leerLock();
+  if (actual && actual.tabId === TAB_ID) localStorage.removeItem(TAB_LOCK_KEY);
+}
+
+function mostrarBloqueoOtraPestana() {
+  document.getElementById("overlay-otra-pestana").classList.add("visible");
+}
+function ocultarBloqueoOtraPestana() {
+  document.getElementById("overlay-otra-pestana").classList.remove("visible");
+}
 
 function formatearTooltip(conf) {
   if (!conf) return "";
@@ -541,18 +619,49 @@ document.getElementById("btn-add-symbol").addEventListener("click", () => {
 document.getElementById("btn-guardar").addEventListener("click", guardarWatchlist);
 document.getElementById("btn-recalcular").addEventListener("click", recalcularAhora);
 
-// Polling liviano (solo lee snapshots ya calculados, no recalcula nada
-// en el navegador ni dispara MT5) — cada 60s alcanza para reflejar el
-// recálculo de Celery que corre cada 5 min, sin sobrecargar de pedidos.
-refrescarVista();
-setInterval(refrescarVista, 60000);
+function iniciarComoPestanaActiva() {
+  ocultarBloqueoOtraPestana();
+  tomarLock();
+  if (heartbeatInterval) clearInterval(heartbeatInterval);
+  heartbeatInterval = setInterval(tomarLock, HEARTBEAT_MS);
+  if (reintentoLockInterval) { clearInterval(reintentoLockInterval); reintentoLockInterval = null; }
+  window.addEventListener("beforeunload", soltarLockSiEsMio);
 
-// Al abrir el tablero (por ejemplo, apenas se abre desde arrancar.bat),
-// disparar un recálculo inmediato en vez de esperar hasta 5 minutos a
-// que lo haga Celery solo — solo si ya hay una selección guardada, así
-// no falla la primera vez que alguien entra sin haber tildado nada.
-{% if mis_divisas and mis_timeframes %}
-recalcularAhora();
-{% endif %}
+  // Polling liviano (solo lee snapshots ya calculados, no recalcula
+  // nada en el navegador ni dispara MT5) — cada 60s alcanza para
+  // reflejar el recálculo de Celery que corre cada 5 min, sin
+  // sobrecargar de pedidos.
+  refrescarVista();
+  setInterval(refrescarVista, 60000);
+
+  // Al abrir el tablero (por ejemplo, apenas se abre desde
+  // arrancar.bat), disparar un recálculo inmediato en vez de esperar
+  // hasta 5 minutos a que lo haga Celery solo — solo si ya hay una
+  // selección guardada, así no falla la primera vez que alguien entra
+  // sin haber tildado nada.
+  {% if mis_divisas and mis_timeframes %}
+  recalcularAhora();
+  {% endif %}
+}
+
+// Al cargar: si ya hay otra pestaña con el lock vigente, esta se queda
+// bloqueada (sin pollear ni disparar nada) y reintenta tomar la posta
+// cada 2s por si esa otra pestaña se cierra. El botón "Usar esta
+// pestaña en su lugar" fuerza la toma inmediata (por si la pestaña
+// vieja quedó zombie, ej. el navegador se cerró de golpe y el
+// beforeunload no llegó a correr).
+if (lockVigenteYAjeno(leerLock())) {
+  mostrarBloqueoOtraPestana();
+  reintentoLockInterval = setInterval(() => {
+    if (!lockVigenteYAjeno(leerLock())) {
+      clearInterval(reintentoLockInterval);
+      reintentoLockInterval = null;
+      iniciarComoPestanaActiva();
+    }
+  }, 2000);
+  document.getElementById("btn-usar-esta-pestana").addEventListener("click", iniciarComoPestanaActiva);
+} else {
+  iniciarComoPestanaActiva();
+}
 </script>
 {% endblock %}
