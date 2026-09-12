@@ -745,6 +745,141 @@ def compute_analysis(symbol=None, timeframe_override=None, hasta=None, auto_pivo
 ALL_TIMEFRAMES = ["M15", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12", "D1", "W1", "MN1"]
 
 
+# ── Señal "KN - Smart TP SL Signals" (mismo indicador que ya se dibuja
+# en el gráfico individual — ver chartview/templates/chartview/grafico.html,
+# función calcularKN() en JS) — portada acá 1:1 para poder mostrar en el
+# tablero si la última señal es de compra o de venta, sin tener que abrir
+# el gráfico de cada divisa/temporalidad a mano. Cruce EMA5/EMA13 + SL por
+# ATR(14) y 3 objetivos por RR (1:1, 1:2, 1:3), igual que el original.
+KN_EMA_FAST = 5
+KN_EMA_SLOW = 13
+KN_ATR_LEN = 14
+KN_SL_MULT = 1.5
+KN_RR = (1, 2, 3)
+
+
+def _kn_ema(values, length):
+    k = 2.0 / (length + 1)
+    out = np.empty(len(values), dtype=float)
+    out[0] = values[0]
+    for i in range(1, len(values)):
+        out[i] = values[i] * k + out[i - 1] * (1 - k)
+    return out
+
+
+def compute_kn_signal(data):
+    """Recalcula, sobre las mismas velas [datetime, open, high, low, close]
+    que ya se usan para los canales, cuál fue el último cruce EMA5/EMA13
+    (alcista o bajista) — idéntico al cálculo de entrada/SL/TP1/TP2/TP3 de
+    calcularKN() en el gráfico, pero acá corre server-side así el tablero
+    lo puede mostrar como una celda más, sin depender de que el usuario
+    abra el gráfico de esa divisa/TF.
+
+    A diferencia del indicador del gráfico (que va marcando cada TP/SL
+    como "tocado" apenas alguna vela lo roza en el camino, y esa marca
+    queda para siempre aunque el precio se haya dado vuelta después),
+    acá el estado se recalcula SIEMPRE contra el cierre de la ÚLTIMA
+    vela cargada — así el tablero refleja dónde está el precio ahora
+    mismo, no un historial de mechas que ya pasaron. No se reporta
+    ningún estado de "SL tocado": solo si la señal es de compra o de
+    venta, y en qué nivel (Activa / TP1 / TP2 / TP3) está el último
+    cierre respecto a esa señal.
+
+    Devuelve None si no hay velas suficientes o no se encontró ningún
+    cruce dentro del historial cargado (igual que showOnlyLatest en Pine:
+    "sin señal reciente" es un resultado válido, no un error).
+    """
+    n = len(data)
+    min_bars = max(KN_EMA_SLOW, KN_ATR_LEN) + 2
+    if n < min_bars:
+        return None
+
+    closes = data["close"].to_numpy(dtype=float)
+    highs = data["high"].to_numpy(dtype=float)
+    lows = data["low"].to_numpy(dtype=float)
+
+    ema_fast = _kn_ema(closes, KN_EMA_FAST)
+    ema_slow = _kn_ema(closes, KN_EMA_SLOW)
+
+    # True Range + ATR con el suavizado de Wilder (igual que ta.atr en Pine).
+    tr = np.empty(n, dtype=float)
+    tr[0] = highs[0] - lows[0]
+    tr[1:] = np.maximum.reduce([
+        highs[1:] - lows[1:],
+        np.abs(highs[1:] - closes[:-1]),
+        np.abs(lows[1:] - closes[:-1]),
+    ])
+
+    atr = np.full(n, np.nan, dtype=float)
+    if n >= KN_ATR_LEN:
+        atr[KN_ATR_LEN - 1] = tr[:KN_ATR_LEN].mean()
+        for i in range(KN_ATR_LEN, n):
+            atr[i] = (atr[i - 1] * (KN_ATR_LEN - 1) + tr[i]) / KN_ATR_LEN
+
+    # Cruce más reciente, yendo hacia atrás desde la última vela cargada.
+    min_idx = max(KN_EMA_SLOW, KN_ATR_LEN)
+    signal_idx, direction = -1, 0
+    for i in range(n - 1, min_idx - 1, -1):
+        cross_up = ema_fast[i - 1] <= ema_slow[i - 1] and ema_fast[i] > ema_slow[i]
+        cross_down = ema_fast[i - 1] >= ema_slow[i - 1] and ema_fast[i] < ema_slow[i]
+        if cross_up:
+            signal_idx, direction = i, 1
+            break
+        if cross_down:
+            signal_idx, direction = i, -1
+            break
+
+    if signal_idx == -1 or np.isnan(atr[signal_idx]):
+        return None
+
+    entry = float(closes[signal_idx])
+    risk = float(atr[signal_idx]) * KN_SL_MULT
+    sl = entry - risk if direction == 1 else entry + risk
+    tp1, tp2, tp3 = (
+        (entry + risk * rr) if direction == 1 else (entry - risk * rr)
+        for rr in KN_RR
+    )
+
+    # Estado ACTUAL: dónde quedó el último cierre respecto a los niveles,
+    # sin importar si en el camino hubo una mecha que tocó alguno — solo
+    # el cierre más reciente manda. El SL se trata igual que los TP: solo
+    # se marca "sl" cuando el precio va EN CONTRA de la señal y el último
+    # cierre ya cruzó ese nivel (no por una mecha vieja que se recuperó).
+    last_close = float(closes[-1])
+    if direction == 1:
+        if last_close <= sl:
+            estado = "sl"
+        elif last_close >= tp3:
+            estado = "tp3"
+        elif last_close >= tp2:
+            estado = "tp2"
+        elif last_close >= tp1:
+            estado = "tp1"
+        else:
+            estado = "activa"
+    else:
+        if last_close >= sl:
+            estado = "sl"
+        elif last_close <= tp3:
+            estado = "tp3"
+        elif last_close <= tp2:
+            estado = "tp2"
+        elif last_close <= tp1:
+            estado = "tp1"
+        else:
+            estado = "activa"
+
+    return {
+        "dir": direction,                     # 1 = compra, -1 = venta
+        "signal_date": data["datetime"].iloc[signal_idx].strftime("%Y-%m-%d %H:%M"),
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1, "tp2": tp2, "tp3": tp3,
+        "last_close": last_close,
+        "estado": estado,                     # "activa" | "tp1" | "tp2" | "tp3" | "sl"
+    }
+
+
 def compute_tf_row(symbol, tf, data, incremental, auto_pivot, show_both):
     """Parte del cálculo que NO toca MT5 (canales + evaluación S-P-N) para
     UNA temporalidad, con las velas ya traídas de antemano.
@@ -825,9 +960,16 @@ def compute_tf_row(symbol, tf, data, incremental, auto_pivot, show_both):
                                    "rotura_color": "#848e9c", "lado_rotura": None,
                                    "confirmacion": None})
 
+    try:
+        kn = compute_kn_signal(data)
+    except Exception as e:  # la señal KN es un extra — si falla, no debe tumbar la fila entera
+        logger.exception("[compute_tf_row] %s %s: error calculando señal KN", symbol, tf)
+        kn = None
+
     return {
         "timeframe": tf,
         "last_date": data["datetime"].iloc[-1].strftime("%Y-%m-%d %H:%M"),
+        "kn": kn,
         **celdas,
     }
 
