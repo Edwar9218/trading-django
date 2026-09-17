@@ -880,6 +880,45 @@ def compute_kn_signal(data):
     }
 
 
+def _clasificar_senal_canal(estado, kn, rotura=False, lado_rotura=None):
+    """Combina el estado S-P-N de UN canal con la señal KN vigente, pero
+    ahora en dos niveles según si la rotura del canal ya está CONFIRMADA
+    o es solo POTENCIAL:
+
+      1) Si `rotura` ya es True (el cierre de la última vela cruzó el
+         borde de verdad, con cuerpo mínimo filtrado por ATR — el mismo
+         criterio que ya usa la columna "Rotura Sí/No") -> es una
+         "rotura" confirmada, sin importar qué diga el KN. La dirección
+         sale directo de `lado_rotura` ("arriba" = alcista, "abajo" =
+         bajista).
+
+      2) Si todavía NO hay rotura confirmada pero el canal está en
+         soporte/resistencia (cerca del borde, dentro del umbral), se
+         usa el combo con KN de antes para anticipar hacia dónde se
+         puede resolver:
+           - KN en contra de romper  -> "rebote"
+           - KN a favor de romper    -> "rotura_potencial" (todavía no
+             cruzó de verdad, es una anticipación, no un hecho)
+
+    "Neutro" (lejos de cualquier borde), sin rotura y sin señal KN
+    vigente -> None.
+    """
+    if rotura:
+        direccion = "alcista" if lado_rotura == "arriba" else ("bajista" if lado_rotura == "abajo" else None)
+        return {"tipo": "rotura", "direccion": direccion}
+
+    if estado not in ("soporte", "resistencia") or not kn:
+        return None
+
+    es_compra = kn["dir"] == 1
+    if estado == "soporte":
+        return {"tipo": "rebote", "direccion": "alcista"} if es_compra \
+            else {"tipo": "rotura_potencial", "direccion": "bajista"}
+    else:  # "resistencia"
+        return {"tipo": "rebote", "direccion": "bajista"} if not es_compra \
+            else {"tipo": "rotura_potencial", "direccion": "alcista"}
+
+
 def compute_tf_row(symbol, tf, data, incremental, auto_pivot, show_both):
     """Parte del cálculo que NO toca MT5 (canales + evaluación S-P-N) para
     UNA temporalidad, con las velas ya traídas de antemano.
@@ -923,6 +962,13 @@ def compute_tf_row(symbol, tf, data, incremental, auto_pivot, show_both):
         min_displacement_atr=cfg("BREAKOUT_MIN_DISPLACEMENT", 0.15),
         near_threshold_pct=cfg("SPN_NEAR_THRESHOLD_PCT", 30.0),
     )
+
+    try:
+        kn = compute_kn_signal(data)
+    except Exception as e:  # la señal KN es un extra — si falla, no debe tumbar la fila entera
+        logger.exception("[compute_tf_row] %s %s: error calculando señal KN", symbol, tf)
+        kn = None
+
     celdas = {}
     clave_por_label = {
         "Canal largo": "canal_largo",
@@ -932,12 +978,17 @@ def compute_tf_row(symbol, tf, data, incremental, auto_pivot, show_both):
     }
     for r in resultados:
         celdas[clave_por_label[r.label]] = {
+            "estado": r.estado,
             "estado_label": cbs.ESTADO_LABELS.get(r.estado, r.estado),
             "estado_color": cbs.ESTADO_COLORS.get(r.estado, "#848e9c"),
             "distancia_pct": r.distancia_pct,
             "rotura_label": "Sí" if r.rotura else "No",
             "rotura_color": cbs.ROTURA_COLOR_SI if r.rotura else cbs.ROTURA_COLOR_NO,
             "lado_rotura": r.lado_rotura,
+            # Rebote/Rotura (confirmada o potencial) combinando el
+            # estado S-P-N y la rotura real de ESTE canal con la señal
+            # KN vigente — ver _clasificar_senal_canal.
+            "senal": _clasificar_senal_canal(r.estado, kn, rotura=r.rotura, lado_rotura=r.lado_rotura),
             # Confirmación exacta para el tooltip — el número real
             # detrás del redondeo de "Distancia" y la razón exacta
             # por la que "Rotura" dio Sí o No.
@@ -955,16 +1006,10 @@ def compute_tf_row(symbol, tf, data, incremental, auto_pivot, show_both):
     # Canales que no existen para esa temporalidad (ej. "Corto"
     # desactivado, o no se pudo formar un canal válido) quedan en "—".
     for clave in ("canal_largo", "canal_largo_inverso", "canal_corto", "canal_corto_inverso"):
-        celdas.setdefault(clave, {"estado_label": "—", "estado_color": "#848e9c",
+        celdas.setdefault(clave, {"estado": "neutro", "estado_label": "—", "estado_color": "#848e9c",
                                    "distancia_pct": None, "rotura_label": "—",
                                    "rotura_color": "#848e9c", "lado_rotura": None,
-                                   "confirmacion": None})
-
-    try:
-        kn = compute_kn_signal(data)
-    except Exception as e:  # la señal KN es un extra — si falla, no debe tumbar la fila entera
-        logger.exception("[compute_tf_row] %s %s: error calculando señal KN", symbol, tf)
-        kn = None
+                                   "senal": None, "confirmacion": None})
 
     return {
         "timeframe": tf,

@@ -20,8 +20,10 @@ dirección con la que se construyó el canal no limita qué puede reportar.
 Tres columnas por canal:
   - Estado (S-P-N): "Soporte" / "Resistencia" / "Neutro"
   - Distancia: % del ANCHO DE LA BANDA que le falta al precio para tocar
-    el borde relevante (el que determina el Estado). 0% = tocando/rompió
-    ese borde ahora mismo.
+    el borde relevante (el que determina el Estado). 0% = tocando ese
+    borde ahora mismo. NEGATIVO = ya lo cruzó, y por cuánto (en % del
+    ancho de la banda) — antes esto se recortaba a 0% con un max(0, ...),
+    lo que hacía indistinguible "apenas tocando" de "rompió por mucho".
   - Rotura: Sí/No — si el cierre de la última vela ya está más allá de
     algún borde (con un cuerpo mínimo de vela para filtrar ruido), más el
     lado (arriba/abajo) para que quede explícito cuál se rompió.
@@ -50,7 +52,7 @@ class ChannelSPN:
     label: str
     direction: str              # "up" / "down" — cómo se construyó el canal (informativo, no limita el estado)
     estado: str                  # "soporte" / "resistencia" / "neutro"
-    distancia_pct: Optional[float]   # 0-100 REDONDEADO (para mostrar en la celda)
+    distancia_pct: Optional[float]   # puede ser NEGATIVO si ya rompió el borde (REDONDEADO, para la celda)
     rotura: bool
     lado_rotura: Optional[str] = None   # "arriba" / "abajo" / None
     quality: float = 0.0
@@ -61,7 +63,7 @@ class ChannelSPN:
     precio_actual: Optional[float] = None
     borde_top: Optional[float] = None
     borde_bottom: Optional[float] = None
-    distancia_exacta_pct: Optional[float] = None   # sin redondear
+    distancia_exacta_pct: Optional[float] = None   # sin redondear, puede ser negativo
     cuerpo_vela: Optional[float] = None             # |close - open| de la última vela
     displacement: Optional[float] = None            # cuerpo_vela / ATR
     displacement_minimo: Optional[float] = None      # el umbral que hace falta superar
@@ -102,8 +104,14 @@ def evaluar_canal_spn(df: pd.DataFrame, channel, label: str,
     if width <= 0:
         dist_bottom_pct = dist_top_pct = 0.0
     else:
-        dist_bottom_pct = max(0.0, min(100.0, (price - bottom) / width * 100.0))
-        dist_top_pct = max(0.0, min(100.0, (top - price) / width * 100.0))
+        # Sin recorte por abajo: si el precio ya cruzó el borde, el
+        # resultado queda negativo a propósito (eso es lo que permite
+        # distinguir "tocando la raya" de "ya rompió por X%"). El
+        # recorte por arriba (100%) sigue porque del lado lejano no
+        # aporta información — solo evita números absurdos cuando el
+        # precio está del todo opuesto de la banda.
+        dist_bottom_pct = min(100.0, (price - bottom) / width * 100.0)
+        dist_top_pct = min(100.0, (top - price) / width * 100.0)
 
     atr_last = atr_arr[last]
     if np.isnan(atr_last) or atr_last == 0:
