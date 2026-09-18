@@ -47,4 +47,13 @@ assert.ok(revisados > 10);
 assert.strictEqual(F.calcular(c.slice(0, 10)), null);
 assert.strictEqual(F.calcular([]), null);
 
+// 4) las zonas mostradas no se solapan (se fusionan si se tocan)
+const ord = r.zones.slice().sort((a, b) => a.bottom - b.bottom);
+for (let i = 1; i < ord.length; i++) assert.ok(ord[i].bottom > ord[i - 1].top, "zonas solapadas");
+
+// 5) la fuerza no depende de los rebotes pasados (están sesgados por construcción)
+const zz = r.zones[0];
+assert.ok(zz.fuerza <= 100 && zz.fuerza >= 0);
+assert.ok(!("respeto" in zz), "respeto ya no debe exponerse");
+
 console.log(`OK — ${r.zones.length} zonas, ${r.fractals.length} fractales, ${revisados} verificaciones de causalidad`);

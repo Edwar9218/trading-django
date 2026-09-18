@@ -16,8 +16,9 @@
  *  3) Agrupación 1D de los precios de los fractales en ZONAS (tolerancia
  *     en ATR y ancho máximo), mezclando máximos y mínimos: una zona que
  *     fue resistencia y luego soporte (cambio de rol) suma polaridad.
- *  4) Historial de cada zona sobre las mismas velas: cuántas veces el
- *     precio entró y fue RECHAZADO vs. cuántas la CRUZÓ.
+ *  4) Reacciones de cada zona (rebotes / cruces) como CONTEXTO: no entran
+ *     en la fuerza porque están sesgadas (la zona se dibuja donde el precio
+ *     ya giró). Fuerza = 80% densidad de fractales + 20% cambio de rol.
  *
  * Todo es causal: cada fractal solo se usa a partir de su vela de
  * confirmación (pivote + k velas), y la confirmación HTF solo cuenta si la
@@ -37,6 +38,10 @@
     bandwidthAtr: 0.35,     // ancho de la campana de cada fractal
     zoneRadiusAtr: 0.60,    // fractales a más de esto del pico no entran a la zona
     minSepAtr: 1.00,        // separación mínima entre centros de zonas
+    mergeGapAtr: 0.25,      // zonas que se tocan (hueco < esto) se unen en una sola
+    maxMergedWidthAtr: 1.6, // ...siempre que la zona unida no quede demasiado ancha
+    reactAtr: 0.50,         // rechazo = el precio se aleja al menos esto tras tocar la zona
+    maxDistAtr: 12,         // zonas más lejos que esto no se muestran (no son accionables)
     minZoneWidthAtr: 0.20,
     halfLifeBars: 150,      // los fractales viejos pesan la mitad cada 150 velas
     minMembers: 2,          // una zona necesita al menos 2 fractales
@@ -205,9 +210,22 @@
       }
     }
 
+    // ── 3b) unir zonas que se solapan o se tocan: en el gráfico se leen como
+    // una sola barrera y dos etiquetas pegadas solo confunden.
+    const bandas = clusters.filter(cl => cl.members.length)
+      .map(cl => ({ members: cl.members, lo: Math.min(...cl.members.map(f => f.price)), hi: Math.max(...cl.members.map(f => f.price)) }))
+      .sort((a, b) => a.lo - b.lo);
+    const unidas = [];
+    bandas.forEach(b => {
+      const u = unidas[unidas.length - 1];
+      if (u && b.lo - u.hi <= o.mergeGapAtr * aNow && Math.max(u.hi, b.hi) - u.lo <= o.maxMergedWidthAtr * aNow) {
+        u.members = u.members.concat(b.members); u.hi = Math.max(u.hi, b.hi);
+      } else unidas.push({ members: b.members.slice(), lo: b.lo, hi: b.hi });
+    });
+
     // ── 4) métricas de cada zona ──
     const close = C[last];
-    let zones = clusters.filter(cl => cl.members.length >= o.minMembers).map(cluster => {
+    let zones = unidas.filter(cl => cl.members.length >= o.minMembers).map(cluster => {
       const cl = cluster.members.sort((x, y) => x.price - y.price);
       let bottom = cl[0].price, top = cl[cl.length - 1].price;
       if (top - bottom < minW) { const mid = (top + bottom) / 2; top = mid + minW / 2; bottom = mid - minW / 2; }
@@ -221,27 +239,52 @@
         best = Math.max(best, f.score);
       });
 
-      // episodios: el precio entra a la zona y sale (rechazo = sale por donde vino)
-      const side = j => (C[j] > top ? 1 : C[j] < bottom ? -1 : 0);
-      // solo desde que la zona existe (primer fractal confirmado): sin mirar atrás
-      let rej = 0, cross = 0, inEp = false, from = 0, lastTouch = firstIdx;
+      // Reacciones de la zona (DESCRIPTIVO, no probabilidad). Ojo: la zona se
+      // ubica justamente donde el precio giró, así que sus rebotes pasados
+      // salen altos por construcción — en un paseo aleatorio también darían
+      // ~70%. Por eso NO entran en la fuerza; solo se muestran como contexto.
+      // Regla simétrica:
+      //  - una visita empieza cuando el precio llega a la MITAD de la zona
+      //    viniendo desde afuera (estando alejado al menos reactAtr);
+      //  - termina cuando se aleja reactAtr más allá de un borde:
+      //    por el lado del que vino = REBOTE, por el otro = CRUCE;
+      //  - una visita todavía sin resolver al final no se cuenta.
+      // Solo desde que la zona existe (primer fractal confirmado): sin mirar atrás.
+      const midZ = (top + bottom) / 2;
+      const lejos = j => {                       // lado si está lejos, 0 si no
+        const r = o.reactAtr * (atr[j] || aNow);
+        const arriba = L[j] >= top + r, abajo = H[j] <= bottom - r;
+        const salioArriba = H[j] >= top + r, salioAbajo = L[j] <= bottom - r;
+        return { arriba, abajo, salioArriba, salioAbajo };
+      };
+      let rej = 0, cross = 0, from = 0, enVisita = false;
+      let lastTouch = firstIdx, ultimoEvento = null;
       for (let j = firstConfirm + 1; j <= last; j++) {
-        const touches = L[j] <= top && H[j] >= bottom;
-        if (!inEp && touches) {
-          from = side(j - 1);
-          if (from !== 0) { inEp = true; lastTouch = j; }
+        const e = lejos(j);
+        if (L[j] <= top && H[j] >= bottom) lastTouch = j;
+        if (!enVisita) {
+          if (e.arriba) from = 1;
+          else if (e.abajo) from = -1;
+          if (from !== 0 && L[j] <= midZ && H[j] >= midZ) enVisita = true;
+          else continue;
         }
-        if (inEp) {
-          const s = side(j);
-          if (s !== 0) { s === from ? rej++ : cross++; inEp = false; }
-        }
+        // ¿por dónde salió? Si en la misma vela sale por los dos lados, decide el cierre.
+        let salida = 0;
+        if (e.salioArriba && e.salioAbajo) salida = C[j] > midZ ? 1 : -1;
+        else if (e.salioArriba) salida = 1;
+        else if (e.salioAbajo) salida = -1;
+        if (salida === 0) continue;
+        if (salida === from) { rej++; ultimoEvento = { tipo: "rechazo", idx: j }; }
+        else                 { cross++; ultimoEvento = { tipo: "cruce", idx: j }; }
+        enVisita = false; from = salida;
       }
-      const respeto = (rej + 1) / (rej + cross + 2);     // suavizado de Laplace
       const tipo = close > top ? "S" : close < bottom ? "R" : "Z";
       return {
         top, bottom, mid: (top + bottom) / 2, raw, best,
         nFractales: cl.length, nAltos: nHi, nBajos: nLo, polaridad: nHi > 0 && nLo > 0,
-        rechazos: rej, cruces: cross, respeto,
+        rechazos: rej, cruces: cross, visitaEnCurso: enVisita,
+        ultimoEvento: ultimoEvento ? { tipo: ultimoEvento.tipo, hace: last - ultimoEvento.idx } : null,
+        ultimoToqueHace: last - Math.max(lastTouch, lastIdx),
         startTime: times[firstIdx], confirmTime: times[Math.min(firstConfirm, n - 1)],
         lastTouchTime: times[Math.max(lastTouch, lastIdx)],
         tipo, distAtr: tipo === "Z" ? 0 : Math.min(Math.abs(close - top), Math.abs(close - bottom)) / aNow,
@@ -251,10 +294,12 @@
 
     const maxRaw = zones.reduce((m, z) => Math.max(m, z.raw), 0) || 1;
     zones.forEach(z => {
-      z.fuerza = 100 * (0.55 * (z.raw / maxRaw) + 0.30 * z.respeto + 0.15 * (z.polaridad ? 1 : 0));
+      // 80% densidad de fractales importantes (recientes pesan más) + 20% si
+      // cambió de rol. El historial de rebotes no entra (ver arriba).
+      z.fuerza = 100 * (0.80 * (z.raw / maxRaw) + 0.20 * (z.polaridad ? 1 : 0));
       z.clase = tierOf(z.fuerza);
     });
-    zones = zones.filter(z => z.fuerza >= o.minStrength);
+    zones = zones.filter(z => z.fuerza >= o.minStrength && z.distAtr <= o.maxDistAtr);
 
     const pick = arr => arr.sort((a, b) => b.fuerza - a.fuerza).slice(0, o.maxZonesPerSide)
                            .sort((a, b) => a.distAtr - b.distAtr);
