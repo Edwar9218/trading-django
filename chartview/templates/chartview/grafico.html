@@ -1,9 +1,11 @@
 {% extends "base.html" %}
+{% load static %}
 {% block title %}Gráfico{% endblock %}
 {% block nav_chart %}activo{% endblock %}
 
 {% block extra_head %}
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="{% static 'chartview/fractal_sr.js' %}"></script>
 <style>
   /* Layout propio de esta página: base.html usa scroll normal (bien
      para el tablero), pero el gráfico necesita ocupar toda la altura
@@ -397,6 +399,66 @@
     }
     .posicion-board .pb-empty { padding: 10px; color: #848e9c; text-align: center; }
 
+    /* ── Tabla de zonas S/R Fractal (lado izquierdo del gráfico) ── */
+    .srf-board {
+      position: absolute;
+      top: 10px; left: 54px;
+      z-index: 7;
+      display: none;
+      flex-direction: column;
+      width: 372px;
+      max-height: calc(100% - 50px);
+      background: rgba(19, 23, 34, 0.95);
+      border: 1px solid #2a2e39;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #d1d4dc;
+      box-shadow: 0 2px 10px rgba(0,0,0,.35);
+      overflow: hidden;
+    }
+    .srf-board.show { display: flex; }
+    .srf-board .srf-head {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 8px 6px 10px;
+      background: #1e222d; border-bottom: 1px solid #2a2e39;
+      color: #d9a441; font-weight: 600; font-size: 10px; letter-spacing: .04em;
+    }
+    .srf-board .srf-head .srf-sub { color: #848e9c; font-weight: 400; letter-spacing: 0; flex: 1; }
+    .srf-board .srf-btn {
+      background: none; border: 1px solid #363a45; color: #d1d4dc; border-radius: 4px;
+      width: 20px; height: 18px; line-height: 14px; font-size: 11px; cursor: pointer; padding: 0;
+    }
+    .srf-board .srf-btn:hover { border-color: #2962ff; color: #fff; }
+    .srf-board .srf-body { overflow-y: auto; }
+    .srf-board.min .srf-body, .srf-board.min .srf-guia { display: none; }
+    .srf-board table { width: 100%; border-collapse: collapse; }
+    .srf-board th {
+      position: sticky; top: 0; background: #181c27; color: #848e9c;
+      font-weight: 500; font-size: 9.5px; text-align: left; padding: 4px 6px;
+      border-bottom: 1px solid #2a2e39; white-space: nowrap;
+    }
+    .srf-board td { padding: 5px 6px 1px; vertical-align: top; white-space: nowrap; }
+    .srf-board tr.srf-zona { cursor: pointer; }
+    .srf-board tr.srf-zona:hover td, .srf-board tr.srf-zona.activa td { background: rgba(41, 98, 255, 0.10); }
+    .srf-board tr.srf-lectura td {
+      white-space: normal; padding: 0 6px 6px; color: #9aa0a6; font-size: 10.5px; line-height: 1.35;
+      border-bottom: 1px solid #1e222d;
+    }
+    .srf-board .srf-tag { font-weight: 700; padding: 1px 6px; border-radius: 8px; font-size: 10px; }
+    .srf-board .srf-bar { display: inline-block; width: 34px; height: 5px; background: #2a2e39; border-radius: 3px; vertical-align: middle; margin-right: 4px; }
+    .srf-board .srf-bar i { display: block; height: 100%; border-radius: 3px; }
+    .srf-board .srf-precio td {
+      text-align: center; color: #ffb300; font-size: 10px; padding: 3px; border-bottom: 1px solid #1e222d;
+      background: rgba(255, 179, 0, 0.06);
+    }
+    .srf-board .srf-guia {
+      display: none; padding: 8px 10px; border-top: 1px solid #2a2e39; background: #161a25;
+      font-size: 10.5px; line-height: 1.45; color: #b2b5be; overflow-y: auto; max-height: 45%;
+    }
+    .srf-board .srf-guia.show { display: block; }
+    .srf-board .srf-guia b { color: #d1d4dc; }
+    .srf-board .srf-empty { padding: 10px; color: #848e9c; text-align: center; }
+
     /* ── Barra lateral de dibujo (estilo TradingView) ─────────────── */
     .chart-plot {
       position: absolute;
@@ -555,6 +617,7 @@
       <span class="sig-kalman">Kalman: —</span>
       <span class="sig-canales">Canales: —</span>
       <span class="sig-kn">KN: —</span>
+      <span class="sig-srf"></span>
     </div>
 
     <div class="channel-toggles">
@@ -568,6 +631,9 @@
       </label>
       <label title="Soportes/resistencias por pivotes confirmados, con ruptura, retest de rol invertido (R→S / S→R) e invalidación — portado del indicador Advanced Support and Resistance with Reversal de TradingView.">
         <input type="checkbox" class="chk-sr" {% if pref_sr_avanzado %}checked{% endif %}> S/R Avanzado
+      </label>
+      <label title="Zonas de soporte/resistencia donde se AGRUPAN fractales importantes. Cada fractal se puntúa por jerarquía de escalas (2→34 velas), prominencia en ATR y confirmación en temporalidades superiores (x3, x12). La etiqueta muestra fuerza (0-100) y rechazos/visitas históricas de la zona. Sin repintado: cada fractal cuenta solo desde su vela de confirmación.">
+        <input type="checkbox" class="chk-srf" {% if pref_sr_fractal %}checked{% endif %}> S/R Fractal
       </label>
       <label title="Prueba varios pivot_len para cada canal y se queda con el de mejor calidad — más lento, pero no hace falta afinarlo a mano en config.py">
         <input type="checkbox" class="chk-auto-pivot" {% if pref_auto_pivot %}checked{% endif %}> Pivot auto
@@ -610,6 +676,7 @@
         <canvas class="overlay-canvas"></canvas>
       </div>
       <div class="posicion-board"></div>
+      <div class="srf-board"></div>
       <div class="empty-screen">
         <svg width="56" height="56" viewBox="0 0 64 64" fill="none">
           <rect x="4"  y="16" width="8"  height="32" rx="2" fill="#d1d4dc"/>
@@ -702,6 +769,9 @@ function crearPanel(rootEl, opciones = {}) {
   const chkKalman        = $(".chk-kalman");
   const chkKn            = $(".chk-kn");
   const chkSr            = $(".chk-sr");
+  const chkSrf           = $(".chk-srf");
+  const sigSrf           = $(".sig-srf");
+  const srfBoardEl       = $(".srf-board");
   const chkPosicionBoard = $(".chk-posicion-board");
   const posicionBoardEl  = $(".posicion-board");
   const chartContainer   = $(".chart-container");
@@ -733,6 +803,7 @@ function crearPanel(rootEl, opciones = {}) {
   let currentPivots = [];
   let currentKN = null;        // última señal KN calculada sobre las velas cargadas
   let currentSR = null;        // niveles S/R Avanzado calculados sobre las velas cargadas
+  let currentSRF = null;       // zonas S/R Fractal (agrupación de fractales multiescala)
   let currentPosicionCanales = [];    // tablero: posición del precio respecto a cada canal
   // Estado inicial de estos toggles = lo que Django ya precargó en el
   // checkbox (preferencia guardada del usuario), no un valor fijo — así
@@ -741,6 +812,12 @@ function crearPanel(rootEl, opciones = {}) {
   let mostrarKalman = chkKalman.checked;
   let mostrarKN = chkKn.checked;
   let mostrarSR = chkSr.checked;
+  let mostrarSRF = chkSrf.checked;
+  let srfResaltada = null;     // zona resaltada al pasar el mouse por su fila de la tabla
+  const leerLS = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === "1"; } catch (e) { return d; } };
+  const guardarLS = (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch (e) {} };
+  let srfTablaMin = leerLS("srf_tabla_min", false);
+  let srfGuiaVisible = leerLS("srf_tabla_guia", false);
   let lastRealTime = null;
   let loadedCandles = [];
   let symbolActual = null, timeframeActual = null;
@@ -1647,6 +1724,17 @@ function crearPanel(rootEl, opciones = {}) {
       }));
     }
 
+    if (currentSRF && mostrarSRF) {
+      currentSRF.mayores.forEach(f => markers.push({
+        time: f.time,
+        position: f.isHigh ? "aboveBar" : "belowBar",
+        color: f.isHigh ? "#ef5350" : "#26a69a",
+        shape: "circle",
+        size: 0.6,
+        text: "",
+      }));
+    }
+
     markers.sort((a, b) => a.time - b.time);
     candleSerie.setMarkers(markers);
   }
@@ -1734,6 +1822,207 @@ function crearPanel(rootEl, opciones = {}) {
     overlayCtx.restore();
   }
 
+  // ══════════════════════════════════════════════════════════
+  // S/R Fractal — zonas donde se agrupan fractales importantes. El motor
+  // vive en chartview/static/chartview/fractal_sr.js (puro, sin DOM, con
+  // pruebas); acá solo se calcula sobre las velas cargadas y se dibuja.
+  // ══════════════════════════════════════════════════════════
+  function calcularSRFractal(candles) {
+    if (!window.FractalSR) return null;
+    try { return window.FractalSR.calcular(candles); }
+    catch (e) { console.error("S/R Fractal:", e); return null; }
+  }
+
+  function fmtPrecioSRF(v) {
+    const a = Math.abs(v);
+    return v.toFixed(a >= 1000 ? 2 : a >= 20 ? 3 : 5);
+  }
+
+  const SRF_COLORES = { R: "#ef5350", S: "#26a69a", Z: "#ffb300" };
+  const SRF_ALFA = { MAYOR: 0.24, IMPORTANTE: 0.16, MENOR: 0.09, BAJO: 0.06 };
+
+  function dibujarZonasSRF(w) {
+    if (!mostrarSRF || !currentSRF) return;
+    const ts = chart.timeScale();
+    // Las zonas terminan donde empieza la escala de precios (no la tapan).
+    let anchoEscala = 0;
+    try { anchoEscala = chart.priceScale("right").width() || 0; } catch (e) { anchoEscala = 0; }
+    const xFin = w - anchoEscala;
+    const etiquetas = [];
+
+    currentSRF.zones.forEach(z => {
+      const yTop = candleSerie.priceToCoordinate(z.top);
+      const yBot = candleSerie.priceToCoordinate(z.bottom);
+      if (yTop === null || yBot === null) return;
+      let x0 = ts.timeToCoordinate(z.confirmTime);
+      x0 = x0 === null ? 0 : Math.max(0, x0);
+      if (x0 >= xFin) return;
+      const color = SRF_COLORES[z.tipo];
+      const y1 = Math.min(yTop, yBot), alto = Math.max(2, Math.abs(yBot - yTop));
+
+      overlayCtx.save();
+      const resaltada = z === srfResaltada;
+      overlayCtx.fillStyle = hexToRgba(color, (SRF_ALFA[z.clase] || 0.08) * (resaltada ? 2.2 : 1));
+      overlayCtx.fillRect(x0, y1, xFin - x0, alto);
+      overlayCtx.strokeStyle = hexToRgba(color, resaltada || z.clase === "MAYOR" ? 0.95 : 0.55);
+      overlayCtx.lineWidth = resaltada ? 2.5 : z.clase === "MAYOR" ? 1.5 : 1;
+      if (z.clase === "MENOR" && !resaltada) overlayCtx.setLineDash([4, 4]);
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x0, y1); overlayCtx.lineTo(xFin, y1);
+      overlayCtx.moveTo(x0, y1 + alto); overlayCtx.lineTo(xFin, y1 + alto);
+      overlayCtx.stroke();
+      overlayCtx.restore();
+
+      const visitas = z.rechazos + z.cruces;
+      etiquetas.push({
+        yZona: y1 + alto / 2, color,
+        texto: `${z.etiqueta} ${fmtPrecioSRF(z.mid)} · ${Math.round(z.fuerza)}` +
+               (visitas ? ` · ${z.rechazos}/${visitas}` : "") + (z.polaridad ? " ⇅" : ""),
+      });
+    });
+
+    // Etiquetas alineadas a la derecha del área de velas, separadas para
+    // que no se encimen; si una se desplaza, una guía la une a su zona.
+    const altoEt = 18, sep = 3;
+    etiquetas.sort((a, b) => a.yZona - b.yZona);
+    etiquetas.forEach((e, i) => {
+      e.y = e.yZona;
+      if (i > 0) e.y = Math.max(e.y, etiquetas[i - 1].y + altoEt + sep);
+    });
+    overlayCtx.save();
+    overlayCtx.font = "bold 11px 'Segoe UI', sans-serif";
+    overlayCtx.textBaseline = "middle";
+    etiquetas.forEach(e => {
+      const anchoTxt = overlayCtx.measureText(e.texto).width + 14;
+      const bx = xFin - anchoTxt - 6;
+      if (Math.abs(e.y - e.yZona) > 1) {
+        overlayCtx.strokeStyle = hexToRgba(e.color, 0.8);
+        overlayCtx.lineWidth = 1;
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(xFin - 2, e.yZona); overlayCtx.lineTo(xFin - 6, e.y);
+        overlayCtx.stroke();
+      }
+      overlayCtx.fillStyle = e.color;
+      overlayCtx.beginPath();
+      if (overlayCtx.roundRect) overlayCtx.roundRect(bx, e.y - altoEt / 2, anchoTxt, altoEt, 4);
+      else overlayCtx.rect(bx, e.y - altoEt / 2, anchoTxt, altoEt);
+      overlayCtx.fill();
+      overlayCtx.fillStyle = "#0b0e14";
+      overlayCtx.textAlign = "left";
+      overlayCtx.fillText(e.texto, bx + 7, e.y + 0.5);
+    });
+    overlayCtx.restore();
+  }
+
+  // Frase en lenguaje simple para cada zona: qué es, qué tan cerca está y
+  // qué tan confiable ha sido en el pasado (sobre las velas cargadas).
+  function lecturaZonaSRF(z) {
+    const visitas = z.rechazos + z.cruces;
+    const pct = visitas ? Math.round(100 * z.rechazos / visitas) : null;
+    const partes = [];
+    if (z.tipo === "R") partes.push(`Resistencia a ${z.distAtr.toFixed(1)} ATR por encima: puede frenar las subidas.`);
+    else if (z.tipo === "S") partes.push(`Soporte a ${z.distAtr.toFixed(1)} ATR por debajo: puede frenar las caídas.`);
+    else partes.push("El precio está DENTRO: zona de decisión. Esperar un rechazo claro o un cierre fuera de la zona.");
+
+    if (visitas < 3) partes.push("Pocas pruebas todavía, dato poco fiable.");
+    else if (pct >= 75) partes.push(`Muy respetada: rechazó ${pct}% de las visitas.`);
+    else if (pct >= 55) partes.push(`Respetada: rechazó ${pct}% de las visitas.`);
+    else partes.push(`Frágil: el precio la cruzó en ${100 - pct}% de las visitas.`);
+
+    if (z.polaridad) partes.push("Ha actuado como soporte y como resistencia (cambio de rol).");
+    if (z.clase === "MAYOR") partes.push("Nivel clave del gráfico.");
+    return partes.join(" ");
+  }
+
+  function renderizarTablaSRF() {
+    if (!mostrarSRF) { srfBoardEl.classList.remove("show"); return; }
+    srfBoardEl.classList.add("show");
+    srfBoardEl.classList.toggle("min", srfTablaMin);
+
+    const zonas = currentSRF ? currentSRF.zones.slice().sort((a, b) => b.mid - a.mid) : [];
+    let cuerpo;
+    if (!zonas.length) {
+      cuerpo = `<div class="srf-empty">Sin zonas con suficientes fractales en las velas cargadas.<br>Prueba "Cargar más historial".</div>`;
+    } else {
+      let filas = "", precioPuesto = false;
+      const filaPrecio = () => `<tr class="srf-precio"><td colspan="5">── Último cierre ${fmtPrecioSRF(currentSRF.close)} ──</td></tr>`;
+      zonas.forEach((z, i) => {
+        if (!precioPuesto && z.tipo === "S") { filas += filaPrecio(); precioPuesto = true; }
+        const color = SRF_COLORES[z.tipo];
+        const visitas = z.rechazos + z.cruces;
+        const pct = visitas ? Math.round(100 * z.rechazos / visitas) : 0;
+        filas += `
+          <tr class="srf-zona" data-i="${i}">
+            <td><span class="srf-tag" style="background:${hexToRgba(color, 0.18)};color:${color}">${z.etiqueta}</span></td>
+            <td>${fmtPrecioSRF(z.bottom)}<br>${fmtPrecioSRF(z.top)}</td>
+            <td><span class="srf-bar"><i style="width:${Math.round(z.fuerza)}%;background:${color}"></i></span><b>${Math.round(z.fuerza)}</b><br><span style="color:#848e9c">${z.clase}</span></td>
+            <td>${visitas ? `${z.rechazos}/${visitas}<br><span style="color:#848e9c">${pct}%</span>` : "—"}</td>
+            <td>${z.nFractales} <span style="color:#848e9c">(${z.nAltos}▲ ${z.nBajos}▼)</span>${z.polaridad ? "<br>⇅ rol" : ""}</td>
+          </tr>
+          <tr class="srf-lectura" data-i="${i}"><td colspan="5">${lecturaZonaSRF(z)}</td></tr>`;
+        if (!precioPuesto && z.tipo === "Z") { precioPuesto = true; }   // la zona "EN ZONA" ya marca el precio
+      });
+      if (!precioPuesto) filas += filaPrecio();
+      cuerpo = `<table>
+        <thead><tr><th>Zona</th><th>Rango</th><th>Fuerza</th><th>Rechazos</th><th>Fractales</th></tr></thead>
+        <tbody>${filas}</tbody></table>`;
+    }
+
+    srfBoardEl.innerHTML = `
+      <div class="srf-head">ZONAS S/R FRACTAL
+        <span class="srf-sub">${currentSRF ? `ATR ${fmtPrecioSRF(currentSRF.atr)}` : ""}</span>
+        <button type="button" class="srf-btn srf-btn-guia" title="Cómo leer esta tabla">?</button>
+        <button type="button" class="srf-btn srf-btn-min" title="Minimizar / expandir">${srfTablaMin ? "+" : "−"}</button>
+      </div>
+      <div class="srf-body">${cuerpo}</div>
+      <div class="srf-guia ${srfGuiaVisible ? "show" : ""}">
+        <b>Zona</b>: R = resistencia (arriba del precio), S = soporte (abajo), EN ZONA = el precio está adentro. R1/S1 son las más cercanas.<br>
+        <b>Rango</b>: precios inferior y superior de la franja sombreada.<br>
+        <b>Fuerza (0-100)</b>: 55% cuántos fractales importantes se agrupan ahí (los recientes pesan más), 30% su historial de rechazos, 15% si cambió de rol. Clase: MAYOR ≥80, IMPORTANTE ≥60, MENOR ≥40.<br>
+        <b>Rechazos</b>: veces que el precio entró a la zona y salió por el mismo lado / total de visitas desde que la zona existe.<br>
+        <b>Fractales</b>: pivotes que forman la zona (▲ máximos, ▼ mínimos). ⇅ = funcionó como soporte y como resistencia.<br>
+        <b>Importante</b>: la fuerza mide importancia estructural, no la probabilidad de que el precio rebote. Confírmalo con la vela y tu plan.
+      </div>`;
+
+    srfBoardEl.querySelector(".srf-btn-min").onclick = () => {
+      srfTablaMin = !srfTablaMin; guardarLS("srf_tabla_min", srfTablaMin); renderizarTablaSRF();
+    };
+    srfBoardEl.querySelector(".srf-btn-guia").onclick = () => {
+      srfGuiaVisible = !srfGuiaVisible; guardarLS("srf_tabla_guia", srfGuiaVisible);
+      if (srfGuiaVisible && srfTablaMin) { srfTablaMin = false; guardarLS("srf_tabla_min", false); }
+      renderizarTablaSRF();
+    };
+    srfBoardEl.querySelectorAll("tr[data-i]").forEach(tr => {
+      const z = zonas[+tr.dataset.i];
+      const filasZona = () => srfBoardEl.querySelectorAll(`tr.srf-zona[data-i="${tr.dataset.i}"]`);
+      tr.addEventListener("mouseenter", () => {
+        srfResaltada = z; filasZona().forEach(f => f.classList.add("activa")); requestAnimationFrame(redrawOverlay);
+      });
+      tr.addEventListener("mouseleave", () => {
+        srfResaltada = null; filasZona().forEach(f => f.classList.remove("activa")); requestAnimationFrame(redrawOverlay);
+      });
+    });
+  }
+
+  function actualizarChipSRF() {
+    renderizarTablaSRF();
+    if (!mostrarSRF || !currentSRF || !currentSRF.zones.length) {
+      sigSrf.textContent = mostrarSRF ? "S/R Fractal: sin zonas" : "";
+      sigSrf.style.display = mostrarSRF ? "" : "none";
+      return;
+    }
+    sigSrf.style.display = "";
+    const z = currentSRF.zones;
+    const dentro = z.find(x => x.tipo === "Z");
+    const r1 = z.find(x => x.etiqueta === "R1"), s1 = z.find(x => x.etiqueta === "S1");
+    const parte = (x, n) => x ? `${n} ${fmtPrecioSRF(x.mid)} (${Math.round(x.fuerza)}, a ${x.distAtr.toFixed(1)} ATR)` : `${n} —`;
+    sigSrf.textContent = dentro
+      ? `S/R Fractal: ⚠ precio EN ZONA ${fmtPrecioSRF(dentro.bottom)}–${fmtPrecioSRF(dentro.top)} (${Math.round(dentro.fuerza)})`
+      : `S/R Fractal: ${parte(r1, "R1")} · ${parte(s1, "S1")}`;
+    sigSrf.title = "Fuerza 0-100 = densidad de fractales importantes (55%) + historial de rechazos (30%) + cambio de rol R↔S (15%). " +
+                   "Es importancia estructural, no probabilidad de dirección.";
+  }
+
   function redrawOverlay() {
     if (!overlayCtx) return;
     const w = overlayCanvas.clientWidth, h = overlayCanvas.clientHeight;
@@ -1759,6 +2048,8 @@ function crearPanel(rootEl, opciones = {}) {
           overlayCtx.fill();
         }
       });
+
+    dibujarZonasSRF(w);
 
     if (mostrarKN && currentKN) {
       const k = currentKN;
@@ -1916,9 +2207,11 @@ function crearPanel(rootEl, opciones = {}) {
     currentPivots = data.pivots || [];
     currentKN = calcularKN(data.candles);
     currentSR = calcularSR(data.candles);
+    currentSRF = calcularSRFractal(data.candles);
     dibujarKalmanYMarkers();
     dibujarKN();
     dibujarSR();
+    actualizarChipSRF();
 
     chart.timeScale().fitContent();
     requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
@@ -2085,6 +2378,9 @@ function crearPanel(rootEl, opciones = {}) {
 
       loadedCandles = [...data.candles, ...loadedCandles];
       candleSerie.setData(loadedCandles);
+      currentSRF = calcularSRFractal(loadedCandles);
+      dibujarKalmanYMarkers();
+      actualizarChipSRF();
 
       if (rangoVisible) chart.timeScale().setVisibleRange(rangoVisible);
       requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
@@ -2381,6 +2677,14 @@ function crearPanel(rootEl, opciones = {}) {
       dibujarKalmanYMarkers(); // refresca marcadores de ruptura/invalidación
       dibujarSR();             // refresca líneas de niveles + flips
       guardarPreferencia("sr_avanzado", e.target.checked);
+    });
+    chkSrf.addEventListener("change", e => {
+      mostrarSRF = e.target.checked;
+      if (mostrarSRF && !currentSRF && loadedCandles.length) currentSRF = calcularSRFractal(loadedCandles);
+      dibujarKalmanYMarkers(); // refresca los puntos de fractales MAYORES
+      actualizarChipSRF();
+      requestAnimationFrame(redrawOverlay);
+      guardarPreferencia("sr_fractal", e.target.checked);
     });
     chkAutoPivot.addEventListener("change", e => {
       guardarPreferencia("auto_pivot", e.target.checked);

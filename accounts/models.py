@@ -34,6 +34,10 @@ class PerfilUsuario(models.Model):
     # invalidación. Igual que KN, se calcula en el navegador con las
     # mismas velas ya cargadas.
     pref_sr_avanzado = models.BooleanField(default=False)
+    # Zonas S/R por agrupación de fractales multiescala (score por escala,
+    # prominencia ATR y confirmación en temporalidad superior). Se calcula
+    # en el navegador (chartview/static/chartview/fractal_sr.js).
+    pref_sr_fractal = models.BooleanField(default=False)
 
     # ── Generación del watchlist ──
     # Se incrementa cada vez que el usuario guarda una selección nueva o
