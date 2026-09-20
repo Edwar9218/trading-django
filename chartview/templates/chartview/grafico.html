@@ -268,6 +268,21 @@
       width: 12px; height: 12px;
     }
 
+    /* ── Apagar/encender todos los indicadores de un golpe ── */
+    .btn-todos {
+      background: #1e222d;
+      border: 1px solid #363c4e;
+      border-radius: 6px;
+      color: #848e9c;
+      font-family: inherit;
+      font-size: 10.5px;
+      padding: 3px 9px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn-todos:hover { border-color: #2962ff; color: #d1d4dc; }
+    .btn-todos.apagar:hover { border-color: #ef5350; color: #ef5350; }
+
     /* ── Leyenda de canales (reemplaza las tarjetas flotantes que antes
        aparecían pegadas al final de cada línea, adentro del gráfico) ── */
     .sig-text-group {
@@ -711,6 +726,7 @@
     </div>
 
     <div class="channel-toggles">
+      <button type="button" class="btn-todos">Apagar todo</button>
       <label class="lbl-largo"><input type="checkbox" class="chk-largo" {% if pref_largo %}checked{% endif %}> Largo</label>
       <label class="lbl-mediano"><input type="checkbox" class="chk-mediano" {% if pref_mediano %}checked{% endif %}> Mediano</label>
       <label class="lbl-corto"><input type="checkbox" class="chk-corto" {% if pref_corto %}checked{% endif %}> Corto</label>
@@ -913,6 +929,56 @@ function crearPanel(rootEl, opciones = {}) {
   let srfResaltada = null;     // zona resaltada al pasar el mouse por su fila de la tabla
   const leerLS = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === "1"; } catch (e) { return d; } };
   const guardarLS = (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch (e) {} };
+
+  // ── Apagar/encender todos los indicadores de un golpe ──
+  // No duplica la lógica de cada indicador: marca el checkbox y dispara
+  // su propio evento "change", así corre exactamente el mismo código que
+  // si lo hubieras clickeado a mano (dibujo, panel y guardado de
+  // preferencia incluidos). Si mañana agregás un indicador nuevo, el
+  // botón lo agarra solo, sin tocar nada acá.
+  const togglesBar = $(".channel-toggles");
+  const btnTodos = $(".btn-todos");
+
+  // "Pivot auto" queda AFUERA a propósito: no es un indicador que se
+  // dibuje, es un modo de cálculo del servidor que hace más lento el
+  // próximo "Cargar". Encenderlo sin querer, de rebote, sería una
+  // sorpresa desagradable. Los checkboxes ocultos (canales que esta
+  // divisa no tiene) también se saltean: el botón actúa sobre lo que se
+  // ve en la barra, nada más.
+  function indicadoresDeLaBarra() {
+    return [...togglesBar.querySelectorAll("input[type=checkbox]")].filter(c =>
+      !c.classList.contains("chk-auto-pivot") &&
+      c.closest("label") && c.closest("label").style.display !== "none");
+  }
+
+  function actualizarBtnTodos() {
+    const lista = indicadoresDeLaBarra();
+    const activos = lista.filter(c => c.checked).length;
+    const apagar = activos > 0;
+    btnTodos.textContent = apagar ? "Apagar todo" : "Encender todo";
+    btnTodos.classList.toggle("apagar", apagar);
+    btnTodos.title = apagar
+      ? `Apaga de una vez los ${activos} indicadores encendidos (Pivot auto no se toca)`
+      : `Enciende los ${lista.length} indicadores de la barra (Pivot auto no se toca)`;
+  }
+
+  btnTodos.addEventListener("click", () => {
+    const lista = indicadoresDeLaBarra();
+    // Si hay aunque sea uno encendido, el botón apaga. Recién con todos
+    // apagados, enciende — así un click nunca hace las dos cosas a medias.
+    const prender = !lista.some(c => c.checked);
+    lista.forEach(c => {
+      if (c.checked === prender) return;        // ya estaba como corresponde
+      c.checked = prender;
+      c.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    actualizarBtnTodos();
+  });
+
+  // Delegación en la barra entera: cualquier checkbox que cambie (a mano
+  // o por el botón) refresca la etiqueta, sin engancharlo uno por uno.
+  togglesBar.addEventListener("change", actualizarBtnTodos);
+  actualizarBtnTodos();
   let srfTablaMin = leerLS("srf_tabla_min", false);
   let srfGuiaVisible = leerLS("srf_tabla_guia", false);
 
@@ -1343,6 +1409,9 @@ function crearPanel(rootEl, opciones = {}) {
     lblLargo.style.display   = gruposPresentes.has("largo")   ? "flex" : "none";
     lblMediano.style.display = gruposPresentes.has("mediano") ? "flex" : "none";
     lblCorto.style.display   = gruposPresentes.has("corto")   ? "flex" : "none";
+    // Al ocultarse/mostrarse canales cambia el conjunto sobre el que
+    // actúa el botón, así que su etiqueta se recalcula acá también.
+    actualizarBtnTodos();
   }
 
   // Reemplaza las tarjetas flotantes que antes aparecían pegadas al final
