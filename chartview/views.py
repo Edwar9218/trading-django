@@ -33,6 +33,7 @@ def grafico(request):
         "pref_kn_signals": perfil.pref_kn_signals,
         "pref_sr_avanzado": perfil.pref_sr_avanzado,
         "pref_sr_fractal": perfil.pref_sr_fractal,
+        "pref_secuencia": perfil.pref_secuencia,
     })
 
 
@@ -48,6 +49,7 @@ _CAMPOS_PREFERENCIA = {
     "kn_signals": "pref_kn_signals",
     "sr_avanzado": "pref_sr_avanzado",
     "sr_fractal": "pref_sr_fractal",
+    "secuencia": "pref_secuencia",
 }
 
 

@@ -6,6 +6,7 @@
 {% block extra_head %}
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="{% static 'chartview/fractal_sr.js' %}"></script>
+<script src="{% static 'chartview/secuencia_fractal.js' %}"></script>
 <style>
   /* Layout propio de esta página: base.html usa scroll normal (bien
      para el tablero), pero el gráfico necesita ocupar toda la altura
@@ -461,6 +462,92 @@
     .srf-board .srf-guia b { color: #d1d4dc; }
     .srf-board .srf-empty { padding: 10px; color: #848e9c; text-align: center; }
 
+    /* ── Panel de secuencia estructural (lado derecho del gráfico) ── */
+    .seq-panel {
+      position: absolute;
+      top: 10px; right: 78px;
+      z-index: 7;
+      display: none;
+      flex-direction: column;
+      width: 232px;
+      background: rgba(19, 23, 34, 0.95);
+      border: 1px solid #2a2e39;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #d1d4dc;
+      box-shadow: 0 2px 10px rgba(0,0,0,.35);
+      overflow: hidden;
+    }
+    .seq-panel.show { display: flex; }
+    .seq-panel .seq-head {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 8px 6px 10px;
+      background: #1e222d; border-bottom: 1px solid #2a2e39;
+      color: #d9a441; font-weight: 600; font-size: 10px; letter-spacing: .04em;
+    }
+    .seq-panel .seq-head .seq-sub { color: #848e9c; font-weight: 400; letter-spacing: 0; flex: 1; }
+    .seq-panel .seq-btn {
+      background: none; border: 1px solid #363a45; color: #d1d4dc; border-radius: 4px;
+      width: 20px; height: 18px; line-height: 14px; font-size: 11px; cursor: pointer; padding: 0;
+    }
+    .seq-panel .seq-btn:hover { border-color: #2962ff; color: #fff; }
+    .seq-panel .seq-btn.on { border-color: #2962ff; color: #2962ff; }
+    .seq-panel.min .seq-body, .seq-panel.min .seq-capas, .seq-panel.min .seq-guia { display: none; }
+    .seq-panel .seq-body { padding: 8px 10px; }
+    .seq-panel .seq-dir {
+      display: flex; align-items: center; gap: 6px; margin-bottom: 7px;
+      font-weight: 700; font-size: 12px;
+    }
+    .seq-panel .seq-dir .seq-badge { padding: 1px 7px; border-radius: 8px; font-size: 10px; }
+    .seq-panel .seq-paso {
+      display: flex; align-items: center; gap: 6px; padding: 2px 0;
+      border-bottom: 1px solid #1a1e29; line-height: 1.5;
+    }
+    .seq-panel .seq-paso:last-of-type { border-bottom: none; }
+    .seq-panel .seq-paso .seq-ico { width: 13px; text-align: center; font-weight: 700; }
+    .seq-panel .seq-paso .seq-nom { flex: 1; color: #b2b5be; }
+    .seq-panel .seq-paso .seq-det { color: #5d606b; font-size: 9.5px; }
+    .seq-panel .seq-paso.ok .seq-nom { color: #d1d4dc; }
+    .seq-panel .seq-paso.ok .seq-ico { color: #26a69a; }
+    .seq-panel .seq-paso.no .seq-ico { color: #4a4e5a; }
+    .seq-panel .seq-paso.curso .seq-ico { color: #ffb300; }
+    .seq-panel .seq-paso.curso .seq-nom { color: #ffb300; }
+    .seq-panel .seq-score { margin-top: 8px; }
+    .seq-panel .seq-score-top {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 10px; color: #848e9c; margin-bottom: 3px;
+    }
+    .seq-panel .seq-score-top b { font-size: 14px; color: #d1d4dc; }
+    .seq-panel .seq-bar { height: 6px; background: #2a2e39; border-radius: 3px; overflow: hidden; }
+    .seq-panel .seq-bar i { display: block; height: 100%; border-radius: 3px; transition: width .2s; }
+    .seq-panel .seq-estado {
+      margin-top: 7px; padding: 5px 7px; border-radius: 4px;
+      font-size: 10px; line-height: 1.35; background: #161a25;
+    }
+    .seq-panel .seq-estado b { display: block; font-size: 10.5px; letter-spacing: .03em; }
+    .seq-panel .seq-estado span { color: #848e9c; }
+    .seq-panel .seq-stats {
+      margin-top: 7px; padding-top: 6px; border-top: 1px solid #2a2e39;
+      font-size: 9.5px; color: #848e9c; line-height: 1.5;
+    }
+    .seq-panel .seq-stats b { color: #b2b5be; }
+    .seq-panel .seq-capas {
+      display: flex; flex-wrap: wrap; gap: 3px;
+      padding: 6px 8px; border-top: 1px solid #2a2e39; background: #161a25;
+    }
+    .seq-panel .seq-capas button {
+      background: #1e222d; border: 1px solid #2a2e39; color: #5d606b;
+      border-radius: 8px; padding: 1px 7px; font-size: 9px; cursor: pointer;
+    }
+    .seq-panel .seq-capas button.on { color: #d1d4dc; border-color: #3d4250; background: #262b38; }
+    .seq-panel .seq-empty { padding: 12px 10px; color: #848e9c; text-align: center; line-height: 1.4; }
+    .seq-panel .seq-guia {
+      display: none; padding: 8px 10px; border-top: 1px solid #2a2e39; background: #161a25;
+      font-size: 10px; line-height: 1.45; color: #b2b5be;
+    }
+    .seq-panel .seq-guia.show { display: block; }
+    .seq-panel .seq-guia b { color: #d1d4dc; }
+
     /* ── Barra lateral de dibujo (estilo TradingView) ─────────────── */
     .chart-plot {
       position: absolute;
@@ -620,6 +707,7 @@
       <span class="sig-canales">Canales: —</span>
       <span class="sig-kn">KN: —</span>
       <span class="sig-srf"></span>
+      <span class="sig-seq"></span>
     </div>
 
     <div class="channel-toggles">
@@ -636,6 +724,9 @@
       </label>
       <label title="Zonas de soporte/resistencia donde se AGRUPAN fractales importantes. Cada fractal se puntúa por jerarquía de escalas (2→34 velas), prominencia en ATR y confirmación en temporalidades superiores (x3, x12). La etiqueta muestra la fuerza (0-100); la tabla de la izquierda explica cada zona. Sin repintado: cada fractal cuenta solo desde su vela de confirmación.">
         <input type="checkbox" class="chk-srf" {% if pref_sr_fractal %}checked{% endif %}> S/R Fractal
+      </label>
+      <label title="Secuencia estructural completa: FRACTAL → RUPTURA → DESPLAZAMIENTO → IMBALANCE (FVG) → RETESTEO → CONTINUACIÓN. No marca nada por tener solo un fractal: cada etapa habilita la siguiente y el panel de la derecha muestra el score 0-100 y el estado. Sin repintado: cada etapa aparece en la vela que la confirmó y no se mueve después.">
+        <input type="checkbox" class="chk-seq" {% if pref_secuencia %}checked{% endif %}> Secuencia
       </label>
       <label title="Prueba varios pivot_len para cada canal y se queda con el de mejor calidad — más lento, pero no hace falta afinarlo a mano en config.py">
         <input type="checkbox" class="chk-auto-pivot" {% if pref_auto_pivot %}checked{% endif %}> Pivot auto
@@ -679,6 +770,7 @@
       </div>
       <div class="posicion-board"></div>
       <div class="srf-board"></div>
+      <div class="seq-panel"></div>
       <div class="empty-screen">
         <svg width="56" height="56" viewBox="0 0 64 64" fill="none">
           <rect x="4"  y="16" width="8"  height="32" rx="2" fill="#d1d4dc"/>
@@ -774,6 +866,9 @@ function crearPanel(rootEl, opciones = {}) {
   const chkSrf           = $(".chk-srf");
   const sigSrf           = $(".sig-srf");
   const srfBoardEl       = $(".srf-board");
+  const chkSeq           = $(".chk-seq");
+  const sigSeq           = $(".sig-seq");
+  const seqPanelEl       = $(".seq-panel");
   const chkPosicionBoard = $(".chk-posicion-board");
   const posicionBoardEl  = $(".posicion-board");
   const chartContainer   = $(".chart-container");
@@ -820,6 +915,36 @@ function crearPanel(rootEl, opciones = {}) {
   const guardarLS = (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch (e) {} };
   let srfTablaMin = leerLS("srf_tabla_min", false);
   let srfGuiaVisible = leerLS("srf_tabla_guia", false);
+
+  // ── Secuencia estructural (fractal → ruptura → desplazamiento →
+  // imbalance → retesteo → continuación). El motor vive en
+  // chartview/static/chartview/secuencia_fractal.js.
+  let currentSEQ = null;
+  let mostrarSEQ = chkSeq.checked;
+  let seqPanelMin = leerLS("seq_panel_min", false);
+  let seqGuiaVisible = leerLS("seq_panel_guia", false);
+  // Cada elemento del gráfico se puede apagar por separado (punto 10 del
+  // pliego): así se puede dejar solo las zonas, o solo las flechas.
+  const seqCapas = {
+    fractales: leerLS("seq_capa_fractales", true),
+    ruptura:   leerLS("seq_capa_ruptura", true),
+    imbalance: leerLS("seq_capa_imbalance", true),
+    retest:    leerLS("seq_capa_retest", true),
+    flechas:   leerLS("seq_capa_flechas", true),
+    etiqueta:  leerLS("seq_capa_etiqueta", true),
+  };
+  // Alertas: solo para eventos CONFIRMADOS y solo una vez cada uno.
+  const seqAlertas = {
+    activas:  leerLS("seq_alerta_on", false),
+    sonido:   leerLS("seq_alerta_sonido", false),
+    fractal:  leerLS("seq_alerta_fractal", false),
+    ruptura:  leerLS("seq_alerta_ruptura", true),
+    imbalance:leerLS("seq_alerta_imbalance", true),
+    retest:   leerLS("seq_alerta_retest", true),
+    completo: leerLS("seq_alerta_completo", true),
+  };
+  let seqEventosVistos = new Set();   // ids ya alertados (no repetir)
+  let seqUltimaBarra = null;          // última vela evaluada para alertas
   let lastRealTime = null;
   let loadedCandles = [];
   let symbolActual = null, timeframeActual = null;
@@ -1737,6 +1862,39 @@ function crearPanel(rootEl, opciones = {}) {
       }));
     }
 
+    // Secuencia estructural: el fractal que originó la estructura, la vela
+    // del desplazamiento y la confirmación de continuación. Solo de las
+    // estructuras dibujables, para no tapar el gráfico de puntos.
+    if (currentSEQ && mostrarSEQ) {
+      currentSEQ.visibles.forEach(s => {
+        const viva = s.estado !== "INVALIDADO";
+        const col = viva ? (s.dir > 0 ? "#26a69a" : "#ef5350") : "#5d606b";
+        if (seqCapas.fractales) {
+          markers.push({
+            time: s.fractal.time,
+            position: s.dir > 0 ? "aboveBar" : "belowBar",
+            color: col, shape: "circle", size: 0.7, text: "",
+          });
+        }
+        if (seqCapas.flechas && s.desplazamiento) {
+          markers.push({
+            time: s.desplazamiento.time,
+            position: s.dir > 0 ? "belowBar" : "aboveBar",
+            color: col, shape: s.dir > 0 ? "arrowUp" : "arrowDown", text: "",
+          });
+        }
+        if (seqCapas.flechas && s.continuacion) {
+          markers.push({
+            time: s.continuacion.time,
+            position: s.dir > 0 ? "belowBar" : "aboveBar",
+            color: viva ? "#00e676" : "#5d606b",
+            shape: s.dir > 0 ? "arrowUp" : "arrowDown",
+            text: `${s.dir > 0 ? "COMPRA" : "VENTA"} ${s.score}`,
+          });
+        }
+      });
+    }
+
     markers.sort((a, b) => a.time - b.time);
     candleSerie.setMarkers(markers);
   }
@@ -2047,6 +2205,346 @@ function crearPanel(rootEl, opciones = {}) {
                    "Es importancia estructural, no probabilidad de dirección.";
   }
 
+  // ══════════════════════════════════════════════════════════
+  // SECUENCIA ESTRUCTURAL
+  //   FRACTAL → RUPTURA → DESPLAZAMIENTO → IMBALANCE → RETESTEO → CONTINUACIÓN
+  //
+  // El motor (secuencia_fractal.js) es puro y está probado aparte; acá
+  // solo se calcula sobre las velas ya cargadas, se dibuja y se explica.
+  // Regla de oro: NO hay señal por tener un fractal. La señal es la
+  // secuencia completa, y el score dice cuánto de ella se cumplió.
+  // ══════════════════════════════════════════════════════════
+  function calcularSecuencia(candles) {
+    if (!window.SecuenciaFractal) return null;
+    try { return window.SecuenciaFractal.calcular(candles, { symbol: symbolActual, timeframe: timeframeActual }); }
+    catch (e) { console.error("Secuencia estructural:", e); return null; }
+  }
+
+  function fmtPrecioSEQ(v) {
+    const a = currentSEQ && currentSEQ.close ? Math.abs(currentSEQ.close) : Math.abs(v);
+    return v.toFixed(a >= 1000 ? 2 : a >= 20 ? 3 : 5);
+  }
+
+  const SEQ_COL = {
+    alcista: "#26a69a", bajista: "#ef5350",
+    muerta: "#5d606b", aviso: "#ffb300", ok: "#00e676",
+  };
+  const colorDe = s => (s.estado === "INVALIDADO" ? SEQ_COL.muerta
+                        : s.dir > 0 ? SEQ_COL.alcista : SEQ_COL.bajista);
+
+  // Las 6 etapas, tal cual el orden del pliego. `estado` de cada una:
+  // "ok" cumplida, "curso" es la que se está esperando, "no" pendiente.
+  function etapasDe(s) {
+    const d = s.dir > 0;
+    const pasos = [
+      { nom: "Fractal", hecho: !!s.fractal,
+        det: s.fractal ? `${d ? "máx." : "mín."} ${fmtPrecioSEQ(s.fractal.price)}` : "" },
+      { nom: "Ruptura", hecho: !!s.ruptura,
+        det: s.ruptura ? `cierre ${d ? ">" : "<"} ${fmtPrecioSEQ(s.ruptura.nivel)}` : "" },
+      { nom: "Desplazamiento", hecho: !!s.desplazamiento,
+        det: s.desplazamiento ? `cuerpo x${s.desplazamiento.cuerpoRel.toFixed(1)} · ${s.desplazamiento.rangoAtr.toFixed(1)} ATR` : "" },
+      { nom: "Imbalance", hecho: !!s.imbalance,
+        det: s.imbalance ? `${fmtPrecioSEQ(s.imbalance.bottom)}–${fmtPrecioSEQ(s.imbalance.top)} · ${s.imbalance.estado.toLowerCase()}` : "" },
+      { nom: "Retesteo", hecho: !!s.retest,
+        det: s.retest ? `${s.retest.tipo} · ${Math.round(s.retest.pct * 100)}% recorrido` : "" },
+      { nom: "Continuación", hecho: !!s.continuacion,
+        det: s.continuacion ? s.continuacion.tipo : "" },
+    ];
+    const primeraPendiente = pasos.findIndex(p => !p.hecho);
+    pasos.forEach((p, i) => {
+      p.estado = p.hecho ? "ok" : (i === primeraPendiente && !s.cerrado ? "curso" : "no");
+      if (p.estado === "curso") p.det = "pendiente";
+    });
+    return pasos;
+  }
+
+  function colorScore(sc) {
+    return sc >= 80 ? SEQ_COL.ok : sc >= 60 ? SEQ_COL.alcista : sc >= 40 ? SEQ_COL.aviso : "#848e9c";
+  }
+
+  // ── Dibujo sobre el canvas: zona del imbalance, nivel roto y retesteo ──
+  function dibujarSecuencia(w) {
+    if (!mostrarSEQ || !currentSEQ) return;
+    const ts = chart.timeScale();
+    let anchoEscala = 0;
+    try { anchoEscala = chart.priceScale("right").width() || 0; } catch (e) { anchoEscala = 0; }
+    const xFin = w - anchoEscala;
+
+    currentSEQ.visibles.forEach(s => {
+      const z = s.imbalance;
+      const col = colorDe(s);
+      const viva = s.estado !== "INVALIDADO";
+
+      // ── nivel del fractal roto: dónde empezó todo ──
+      if (seqCapas.ruptura && s.ruptura) {
+        const yN = candleSerie.priceToCoordinate(s.ruptura.nivel);
+        let xa = ts.timeToCoordinate(s.fractal.time);
+        let xb = ts.timeToCoordinate(s.ruptura.time);
+        if (yN !== null && xa !== null && xb !== null) {
+          overlayCtx.save();
+          overlayCtx.strokeStyle = hexToRgba(col, viva ? 0.75 : 0.35);
+          overlayCtx.lineWidth = 1;
+          overlayCtx.setLineDash([3, 3]);
+          overlayCtx.beginPath();
+          overlayCtx.moveTo(Math.max(0, xa), yN);
+          overlayCtx.lineTo(Math.min(xFin, xb), yN);
+          overlayCtx.stroke();
+          overlayCtx.restore();
+        }
+      }
+
+      // ── zona del imbalance (FVG) ──
+      if (seqCapas.imbalance) {
+        const yTop = candleSerie.priceToCoordinate(z.top);
+        const yBot = candleSerie.priceToCoordinate(z.bottom);
+        let x0 = ts.timeToCoordinate(z.time);
+        if (yTop !== null && yBot !== null && x0 !== null) {
+          x0 = Math.max(0, x0);
+          // Una zona invalidada o mitigada deja de proyectarse: se corta
+          // donde dejó de servir, para no ensuciar el gráfico a la derecha.
+          let x1 = xFin;
+          if (s.cierreTime) {
+            const xc = ts.timeToCoordinate(s.cierreTime);
+            if (xc !== null) x1 = Math.min(xFin, Math.max(x0 + 2, xc));
+          }
+          if (x0 < xFin) {
+            const y1 = Math.min(yTop, yBot), alto = Math.max(2, Math.abs(yBot - yTop));
+            overlayCtx.save();
+            // Relleno según el estado de la zona: llena = activa,
+            // apenas visible = ya mitigada, vacía y punteada = invalidada.
+            const alfa = z.estado === "ACTIVO" ? 0.22
+                       : z.estado === "RETESTEADO" ? 0.16
+                       : z.estado === "MITIGADO" ? 0.07 : 0;
+            if (alfa > 0) { overlayCtx.fillStyle = hexToRgba(col, alfa); overlayCtx.fillRect(x0, y1, x1 - x0, alto); }
+            overlayCtx.strokeStyle = hexToRgba(col, viva ? 0.9 : 0.4);
+            overlayCtx.lineWidth = viva ? 1.2 : 1;
+            if (!viva) overlayCtx.setLineDash([4, 4]);
+            overlayCtx.strokeRect(x0, y1, x1 - x0, alto);
+            overlayCtx.restore();
+
+            // ── retesteo: marca en el borde por donde volvió el precio ──
+            if (seqCapas.retest && s.retest) {
+              const xr = ts.timeToCoordinate(s.retest.time);
+              const yr = candleSerie.priceToCoordinate(s.dir > 0 ? z.top : z.bottom);
+              if (xr !== null && yr !== null) {
+                overlayCtx.save();
+                overlayCtx.fillStyle = hexToRgba(col, 0.95);
+                overlayCtx.beginPath();
+                overlayCtx.arc(xr, yr, 3.5, 0, Math.PI * 2);
+                overlayCtx.fill();
+                overlayCtx.restore();
+              }
+            }
+
+            // ── etiqueta: dirección, score y etapa alcanzada ──
+            if (seqCapas.etiqueta) {
+              const txt = `${s.dir > 0 ? "COMPRA" : "VENTA"} ${s.score} · ${
+                s.estado === "INVALIDADO" ? "invalidada" : s.estado.toLowerCase()}`;
+              overlayCtx.save();
+              overlayCtx.font = "bold 10px 'Segoe UI', sans-serif";
+              overlayCtx.textBaseline = "middle";
+              const ancho = overlayCtx.measureText(txt).width + 12;
+              const bx = Math.min(x0 + 2, xFin - ancho - 4);
+              const by = s.dir > 0 ? y1 + alto + 9 : y1 - 9;
+              overlayCtx.fillStyle = hexToRgba(col, viva ? 0.92 : 0.5);
+              overlayCtx.beginPath();
+              if (overlayCtx.roundRect) overlayCtx.roundRect(bx, by - 8, ancho, 16, 3);
+              else overlayCtx.rect(bx, by - 8, ancho, 16);
+              overlayCtx.fill();
+              overlayCtx.fillStyle = "#0b0e14";
+              overlayCtx.textAlign = "left";
+              overlayCtx.fillText(txt, bx + 6, by + 0.5);
+              overlayCtx.restore();
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // ── Panel 13: estructura actual, checklist, score y estado ──
+  function renderizarPanelSEQ() {
+    if (!mostrarSEQ) { seqPanelEl.classList.remove("show"); return; }
+    seqPanelEl.classList.add("show");
+    seqPanelEl.classList.toggle("min", seqPanelMin);
+
+    const s = currentSEQ ? currentSEQ.actual : null;
+    let cuerpo;
+    if (!s) {
+      cuerpo = `<div class="seq-empty">Ninguna estructura en formación en las velas cargadas.<br>
+                Prueba "Cargar más historial" o una temporalidad mayor.</div>`;
+    } else {
+      const col = colorDe(s);
+      const pasos = etapasDe(s).map(p => `
+        <div class="seq-paso ${p.estado}">
+          <span class="seq-ico">${p.estado === "ok" ? "✓" : p.estado === "curso" ? "◌" : "·"}</span>
+          <span class="seq-nom">${p.nom}</span>
+          <span class="seq-det">${p.det}</span>
+        </div>`).join("");
+
+      const estadoTxt = s.estado === "INVALIDADO"
+        ? `<b style="color:${SEQ_COL.muerta}">INVALIDADA</b><span>${s.motivo}</span>`
+        : s.estado === "COMPLETED"
+          ? `<b style="color:${SEQ_COL.ok}">COMPLETADA</b><span>secuencia entera cumplida; medir el resultado, no asumirlo</span>`
+          : `<b style="color:${SEQ_COL.aviso}">EN FORMACIÓN</b><span>esperando: ${
+              (etapasDe(s).find(p => p.estado === "curso") || { nom: "—" }).nom.toLowerCase()}</span>`;
+
+      const st = currentSEQ.stats;
+      const num = v => (v == null ? "—" : Math.round(v));
+      cuerpo = `
+        <div class="seq-body">
+          <div class="seq-dir">
+            <span class="seq-badge" style="background:${hexToRgba(col, 0.18)};color:${col}">
+              ${s.dir > 0 ? "▲ ALCISTA" : "▼ BAJISTA"}</span>
+            <span style="color:#5d606b;font-weight:400;font-size:9.5px">${
+              s.escala === "TF" ? "esta temporalidad" : `estructura ${s.escala}`}</span>
+          </div>
+          ${pasos}
+          <div class="seq-score">
+            <div class="seq-score-top"><span>SCORE</span><span><b>${s.score}</b>/100</span></div>
+            <div class="seq-bar"><i style="width:${s.score}%;background:${colorScore(s.score)}"></i></div>
+            <div style="margin-top:3px;font-size:9.5px;color:${colorScore(s.score)}">${s.nivel}</div>
+          </div>
+          <div class="seq-estado">${estadoTxt}</div>
+          <div class="seq-stats">
+            Historial de estas velas: <b>${st.imbalances}</b> imbalances ·
+            <b>${num(st.pctRetest)}%</b> retesteados ·
+            <b>${num(st.pctContinuacion)}%</b> continuaron<br>
+            Mediana tras la continuación: <b>${st.recorridoAtr == null ? "—" : st.recorridoAtr.toFixed(1)} ATR</b>
+            a favor en ${currentSEQ.opciones.barrasMedicion} velas
+            (muestra ${st.muestraCompleta}) · retroceso
+            <b>${st.retrocesoAtr == null ? "—" : st.retrocesoAtr.toFixed(1)} ATR</b>
+          </div>
+        </div>`;
+    }
+
+    const capaBtn = (k, txt) => `<button type="button" data-capa="${k}" class="${seqCapas[k] ? "on" : ""}">${txt}</button>`;
+    const alertaBtn = (k, txt) => `<button type="button" data-alerta="${k}" class="${seqAlertas[k] ? "on" : ""}">${txt}</button>`;
+
+    seqPanelEl.innerHTML = `
+      <div class="seq-head">ESTRUCTURA ACTUAL
+        <span class="seq-sub">${currentSEQ ? `${currentSEQ.vivas.length} en curso` : ""}</span>
+        <button type="button" class="seq-btn seq-btn-guia" title="Cómo leer este panel">?</button>
+        <button type="button" class="seq-btn seq-btn-min" title="Minimizar / expandir">${seqPanelMin ? "+" : "−"}</button>
+      </div>
+      ${cuerpo}
+      <div class="seq-capas">
+        ${capaBtn("imbalance", "zona")}${capaBtn("ruptura", "ruptura")}${capaBtn("retest", "retest")}
+        ${capaBtn("fractales", "fractales")}${capaBtn("flechas", "flechas")}${capaBtn("etiqueta", "etiqueta")}
+      </div>
+      <div class="seq-capas" style="border-top-color:#1a1e29">
+        ${alertaBtn("activas", "🔔 alertas")}${alertaBtn("sonido", "sonido")}
+        ${alertaBtn("ruptura", "ruptura")}${alertaBtn("imbalance", "imbalance")}
+        ${alertaBtn("retest", "retest")}${alertaBtn("completo", "completa")}
+      </div>
+      <div class="seq-guia ${seqGuiaVisible ? "show" : ""}">
+        La señal NO es el fractal: es la <b>secuencia completa</b>. Cada etapa suma
+        (fractal, ruptura, desplazamiento e imbalance 20; retesteo y continuación 10).<br>
+        <b>0-39</b> débil · <b>40-59</b> en desarrollo · <b>60-79</b> confirmada · <b>80-100</b> alta confluencia.<br>
+        <b>Imbalance</b> = hueco de 3 velas sin solape. <b>Retesteo</b> = el precio vuelve a
+        ENTRAR en la zona (acercarse no cuenta); el % dice cuánto la recorrió.<br>
+        <b>Score alto = estructura cumplida, no probabilidad de ganar.</b> Las cifras de abajo
+        son de estas velas: úsalas para comprobarlo, no para suponerlo.
+      </div>`;
+
+    seqPanelEl.querySelector(".seq-btn-min").onclick = () => {
+      seqPanelMin = !seqPanelMin; guardarLS("seq_panel_min", seqPanelMin); renderizarPanelSEQ();
+    };
+    seqPanelEl.querySelector(".seq-btn-guia").onclick = () => {
+      seqGuiaVisible = !seqGuiaVisible; guardarLS("seq_panel_guia", seqGuiaVisible);
+      if (seqGuiaVisible && seqPanelMin) { seqPanelMin = false; guardarLS("seq_panel_min", false); }
+      renderizarPanelSEQ();
+    };
+    seqPanelEl.querySelectorAll("[data-capa]").forEach(b => {
+      b.onclick = () => {
+        const k = b.dataset.capa;
+        seqCapas[k] = !seqCapas[k];
+        guardarLS("seq_capa_" + k, seqCapas[k]);
+        renderizarPanelSEQ();
+        dibujarKalmanYMarkers();
+        requestAnimationFrame(redrawOverlay);
+      };
+    });
+    seqPanelEl.querySelectorAll("[data-alerta]").forEach(b => {
+      b.onclick = () => {
+        const k = b.dataset.alerta;
+        seqAlertas[k] = !seqAlertas[k];
+        guardarLS("seq_alerta_" + (k === "activas" ? "on" : k), seqAlertas[k]);
+        if (k === "activas" && seqAlertas.activas && "Notification" in window
+            && Notification.permission === "default") {
+          Notification.requestPermission().catch(() => {});
+        }
+        renderizarPanelSEQ();
+      };
+    });
+  }
+
+  function actualizarChipSEQ() {
+    renderizarPanelSEQ();
+    if (!mostrarSEQ || !currentSEQ || !currentSEQ.actual) {
+      sigSeq.textContent = mostrarSEQ ? "Secuencia: —" : "";
+      sigSeq.style.display = mostrarSEQ ? "" : "none";
+      return;
+    }
+    sigSeq.style.display = "";
+    const s = currentSEQ.actual;
+    const etapa = s.estado === "INVALIDADO" ? `invalidada en ${String(s.estadoAlCerrar || "").toLowerCase()}` : s.estado.toLowerCase();
+    sigSeq.textContent = `Secuencia: ${s.dir > 0 ? "compra" : "venta"} ${s.score}/100 · ${etapa}`;
+    sigSeq.className = "sig-seq chip " + (s.estado === "INVALIDADO" ? "chip-wait" : s.dir > 0 ? "chip-buy" : "chip-sell");
+    sigSeq.title = "Score = suma de las etapas cumplidas de la secuencia. Es confluencia " +
+                   "estructural, no probabilidad de acierto.";
+  }
+
+  // ── 12) Alertas: solo eventos CONFIRMADOS, y cada uno una sola vez ──
+  function pitido() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ac = new Ctx(), osc = ac.createOscillator(), g = ac.createGain();
+      osc.frequency.value = 880; g.gain.value = 0.05;
+      osc.connect(g); g.connect(ac.destination);
+      osc.start(); osc.stop(ac.currentTime + 0.12);
+      setTimeout(() => ac.close().catch(() => {}), 400);
+    } catch (e) { /* el sonido es opcional, nunca debe romper nada */ }
+  }
+
+  const SEQ_ALERTA_DE = {           // evento del motor -> interruptor del panel
+    fractal: "fractal", ruptura: "ruptura", desplazamiento: "ruptura",
+    imbalance: "imbalance", retest: "retest",
+    confirmacion: "completo", completado: "completo",
+  };
+
+  function revisarAlertasSEQ(esPrimeraCarga) {
+    if (!currentSEQ) return;
+    const ids = currentSEQ.eventos.map(e => `${e.setupId}:${e.tipo}:${e.idx}`);
+    // En la primera carga (o al cambiar de símbolo) todo lo que ya pasó se
+    // marca como visto: las alertas son para lo que ocurre de ahora en más.
+    if (esPrimeraCarga) { seqEventosVistos = new Set(ids); return; }
+    if (!mostrarSEQ || !seqAlertas.activas) { ids.forEach(id => seqEventosVistos.add(id)); return; }
+
+    const nuevos = [];
+    currentSEQ.eventos.forEach((e, i) => {
+      const id = ids[i];
+      if (seqEventosVistos.has(id)) return;
+      seqEventosVistos.add(id);
+      if (e.tipo === "invalidacion") return;                    // no se alerta el descarte
+      const llave = SEQ_ALERTA_DE[e.tipo];
+      if (llave && seqAlertas[llave]) nuevos.push(e);
+    });
+    if (!nuevos.length) return;
+
+    const e = nuevos[nuevos.length - 1];
+    const txt = `${symbolActual || ""} ${timeframeActual || ""} · ${
+      e.dir > 0 ? "compra" : "venta"} · ${e.tipo} · score ${e.score}/100`;
+    setEstado("🔔 " + txt, "ok");
+    if (seqAlertas.sonido) pitido();
+    try {
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("Secuencia estructural", { body: txt });
+      }
+    } catch (err) { /* notificación opcional */ }
+  }
+
   function redrawOverlay() {
     if (!overlayCtx) return;
     const w = overlayCanvas.clientWidth, h = overlayCanvas.clientHeight;
@@ -2074,6 +2572,7 @@ function crearPanel(rootEl, opciones = {}) {
       });
 
     dibujarZonasSRF(w);
+    dibujarSecuencia(w);
 
     if (mostrarKN && currentKN) {
       const k = currentKN;
@@ -2232,10 +2731,15 @@ function crearPanel(rootEl, opciones = {}) {
     currentKN = calcularKN(data.candles);
     currentSR = calcularSR(data.candles);
     currentSRF = calcularSRFractal(data.candles);
+    currentSEQ = calcularSecuencia(data.candles);
     dibujarKalmanYMarkers();
     dibujarKN();
     dibujarSR();
     actualizarChipSRF();
+    actualizarChipSEQ();
+    // Símbolo/temporalidad nuevos: el historial que acaba de llegar no se
+    // alerta (ya ocurrió). Solo se avisa de lo que pase a partir de acá.
+    revisarAlertasSEQ(true);
 
     chart.timeScale().fitContent();
     requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
@@ -2403,8 +2907,13 @@ function crearPanel(rootEl, opciones = {}) {
       loadedCandles = [...data.candles, ...loadedCandles];
       candleSerie.setData(loadedCandles);
       currentSRF = calcularSRFractal(loadedCandles);
+      currentSEQ = calcularSecuencia(loadedCandles);
       dibujarKalmanYMarkers();
       actualizarChipSRF();
+      actualizarChipSEQ();
+      // Historial hacia atrás: los índices se corren, así que los ids de
+      // evento cambian. Se re-sincroniza sin alertar de golpe todo lo viejo.
+      revisarAlertasSEQ(true);
 
       if (rangoVisible) chart.timeScale().setVisibleRange(rangoVisible);
       requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
@@ -2709,6 +3218,17 @@ function crearPanel(rootEl, opciones = {}) {
       actualizarChipSRF();
       requestAnimationFrame(redrawOverlay);
       guardarPreferencia("sr_fractal", e.target.checked);
+    });
+    chkSeq.addEventListener("change", e => {
+      mostrarSEQ = e.target.checked;
+      if (mostrarSEQ && !currentSEQ && loadedCandles.length) {
+        currentSEQ = calcularSecuencia(loadedCandles);
+        revisarAlertasSEQ(true);
+      }
+      dibujarKalmanYMarkers(); // marcadores de fractal/desplazamiento/confirmación
+      actualizarChipSEQ();
+      requestAnimationFrame(redrawOverlay);
+      guardarPreferencia("secuencia", e.target.checked);
     });
     chkAutoPivot.addEventListener("change", e => {
       guardarPreferencia("auto_pivot", e.target.checked);

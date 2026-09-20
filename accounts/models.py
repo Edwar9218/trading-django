@@ -38,6 +38,11 @@ class PerfilUsuario(models.Model):
     # prominencia ATR y confirmación en temporalidad superior). Se calcula
     # en el navegador (chartview/static/chartview/fractal_sr.js).
     pref_sr_fractal = models.BooleanField(default=False)
+    # Secuencia estructural completa: fractal → ruptura → desplazamiento →
+    # imbalance (FVG) → retesteo → continuación, con score 0-100 y máquina
+    # de estados. Igual que los anteriores, se calcula en el navegador
+    # (chartview/static/chartview/secuencia_fractal.js).
+    pref_secuencia = models.BooleanField(default=False)
 
     # ── Generación del watchlist ──
     # Se incrementa cada vez que el usuario guarda una selección nueva o
