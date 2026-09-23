@@ -276,10 +276,33 @@ def mt5_session():
             mt5.shutdown()
 
 
+def _parse_hasta(hasta: str) -> datetime:
+    """
+    Parsea el parámetro 'hasta' del selector de fecha/hora del HTML.
+    Acepta:
+    - "YYYY-MM-DDTHH:MM" (datetime-local, con hora y minuto elegidos por
+      el usuario) → se respeta el instante exacto, tal cual.
+    - "YYYY-MM-DDTHH:MM:SS" (algunos navegadores agregan segundos aunque
+      el input pida step=60 — se acepta igual, por las dudas).
+    - "YYYY-MM-DD" (formato viejo, solo fecha — compatibilidad con
+      enlaces/atajos que todavía no manden hora) → se toma como el final
+      de ese día (+1 día), para no perder el comportamiento previo de
+      "traer todo ese día completo".
+    """
+    hasta = hasta.strip()
+    if "T" in hasta:
+        try:
+            return datetime.strptime(hasta, "%Y-%m-%dT%H:%M")
+        except ValueError:
+            return datetime.strptime(hasta, "%Y-%m-%dT%H:%M:%S")
+    return datetime.strptime(hasta, "%Y-%m-%d") + timedelta(days=1)
+
+
 def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
     """
     Descarga velas EN VIVO desde el terminal MT5 abierto en esta PC.
-    hasta: fecha límite "YYYY-MM-DD" (del selector de fecha del HTML) o
+    hasta: fecha (y opcionalmente hora/minuto) límite del selector del
+    HTML — "YYYY-MM-DD" o "YYYY-MM-DDTHH:MM" (ver _parse_hasta) — o
     None para traer hasta la vela más reciente (en formación) de hoy.
 
     Misma estrategia EXACTA que mt5_export.py (ventana progresiva x3 hasta
@@ -328,8 +351,9 @@ def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
         bars_per_day = _BARS_PER_DAY.get(timeframe.upper(), 6)
 
         range_reaches_today = hasta is None
-        date_to = (datetime.strptime(hasta, "%Y-%m-%d") + timedelta(days=1)) if hasta \
-            else (datetime.now() + timedelta(days=1))
+        date_to = _parse_hasta(hasta) if hasta else (datetime.now() + timedelta(days=1))
+        logger.info("[fetch_mt5_candles] %s %s — hasta recibido=%r → date_to=%s (en_vivo=%s)",
+                    symbol, timeframe, hasta, date_to, range_reaches_today)
 
         days_back = max(int(bars_cap * 1.5 / max(bars_per_day, 0.01)), 30)
         max_days_back = 365 * 20
@@ -356,6 +380,10 @@ def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
         if rates is None or len(rates) == 0:
             raise Mt5DataError(f"MT5 no devolvió velas para {symbol} {timeframe} "
                                 f"(last_error: {mt5.last_error()}).")
+
+        logger.info("[fetch_mt5_candles] %s %s — MT5 devolvió %d velas, de %s a %s",
+                    symbol, timeframe, len(rates),
+                    datetime.fromtimestamp(rates[0]["time"]), datetime.fromtimestamp(rates[-1]["time"]))
 
         raw = pd.DataFrame(rates)
         raw["datetime"] = pd.to_datetime(raw["time"], unit="s")

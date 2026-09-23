@@ -58,8 +58,39 @@
       font-size: 13px;
       padding: 5px 9px;
       outline: none;
+      min-width: 190px;
     }
     #fecha-global:focus { border-color: #2962ff; }
+
+    #modo-grafico-toggle {
+      display: flex;
+      gap: 2px;
+      background: #2a2e39;
+      border: 1px solid #363c4e;
+      border-radius: 6px;
+      padding: 2px;
+    }
+    .modo-btn {
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: #848e9c;
+      font-size: 12px;
+      padding: 5px 10px;
+      cursor: pointer;
+    }
+    .modo-btn:hover { color: #d1d4dc; }
+    .modo-btn.activo {
+      background: #2962ff;
+      color: #fff;
+    }
+    #controles-backtesting {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    #controles-backtesting.visible { display: flex; }
 
     #btn-split {
       background: transparent;
@@ -87,6 +118,40 @@
       align-items: center;
     }
     #btn-multitf:hover { border-color: #d9a441; color: #d9a441; }
+
+    /* ── Reproductor de backtesting (play/pause, paso a paso, velocidad) ── */
+    #reproductor {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding-left: 4px;
+      border-left: 1px solid #2a2e39;
+      margin-left: 4px;
+    }
+    #reproductor button {
+      background: transparent;
+      border: 1px solid #363c4e;
+      border-radius: 6px;
+      color: #d1d4dc;
+      font-size: 13px;
+      width: 30px;
+      height: 28px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    #reproductor button:hover { border-color: #2962ff; color: #2962ff; }
+    #reproductor button:disabled { opacity: 0.35; cursor: not-allowed; border-color: #363c4e; color: #848e9c; }
+    #btn-play-pause.reproduciendo { background: #2962ff; border-color: #2962ff; color: #fff; }
+    #velocidad-reproductor {
+      background: #2a2e39;
+      border: 1px solid #363c4e;
+      border-radius: 6px;
+      color: #d1d4dc;
+      font-size: 12px;
+      padding: 5px 6px;
+      outline: none;
+      cursor: pointer;
+    }
 
     #server-status {
       margin-left: auto;
@@ -631,8 +696,25 @@
 
 {% block content %}
 <div id="global-bar">
-  <label for="fecha-global">📅 Fecha (compartida entre pantallas):</label>
-  <input id="fecha-global" type="date" />
+  <div id="modo-grafico-toggle">
+    <button id="btn-modo-online" class="modo-btn" type="button" title="Gráfico en vivo, siempre hasta la última vela — como funcionaba antes">🟢 Online</button>
+    <button id="btn-modo-backtesting" class="modo-btn" type="button" title="Elegí una fecha/hora pasada y repasá el gráfico vela a vela">⏱ Backtesting</button>
+  </div>
+  <div id="controles-backtesting">
+    <label for="fecha-global">📅 Hasta:</label>
+    <input id="fecha-global" type="datetime-local" step="60" />
+    <div id="reproductor">
+      <button id="btn-paso-atras" type="button" title="Retroceder 1 vela">⏮</button>
+      <button id="btn-play-pause" type="button" title="Reproducir (avanza solo, vela a vela)">▶</button>
+      <button id="btn-paso-adelante" type="button" title="Avanzar 1 vela">⏭</button>
+      <select id="velocidad-reproductor" title="Velocidad de reproducción">
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="2">2x</option>
+        <option value="4">4x</option>
+      </select>
+    </div>
+  </div>
   <button id="btn-split">⊞ 2 pantallas</button>
   <a id="btn-multitf" href="#" target="_blank" rel="noopener" title="Abre en una pestaña nueva: tablero S-P-N para varias divisas y temporalidades a la vez">📊 Multi-temporalidad</a>
   <div id="server-status">
@@ -2729,7 +2811,7 @@ function crearPanel(rootEl, opciones = {}) {
       : "—");
   }
 
-  function renderizarSMF(smf) {
+  function renderizarSMF(smf, mantenerVista = false) {
     if (!smf) {
       smfContainer.style.display = "none";
       return;
@@ -2756,17 +2838,43 @@ function crearPanel(rootEl, opciones = {}) {
 
     smfHist.setData(smf.bars);
     smfLine.setData(smf.smoothed);
-    smfChart.timeScale().fitContent();
+
+    // Mismo criterio que el gráfico principal: si se mantiene la vista
+    // (replay / solo cambió la fecha), este panel se sincroniza con el
+    // rango lógico que YA tiene el gráfico principal en vez de resetear
+    // a fitContent() — si no, cada avance de replay hacía que el panel
+    // de SMF "saltara" aunque el gráfico de velas se mantuviera fijo.
+    const rangoActual = mantenerVista ? chart.timeScale().getVisibleLogicalRange() : null;
+    if (rangoActual) {
+      smfChart.timeScale().setVisibleLogicalRange(rangoActual);
+    } else {
+      smfChart.timeScale().fitContent();
+    }
   }
 
-  function renderizarTodo(data) {
+  function renderizarTodo(data, opciones = {}) {
+    // mantenerVista: true cuando el símbolo/timeframe no cambiaron respecto
+    // a la carga anterior (ej. el reproductor de replay avanzando un paso,
+    // o simplemente tocar la fecha con la misma divisa puesta) — en ese
+    // caso no tiene sentido "resetear" el zoom/paneo que el usuario ya
+    // armó a mano (por ejemplo para ver el gráfico junto a los tableros
+    // de indicadores); se restaura el mismo rango visible de antes en vez
+    // de hacer fitContent(). Si cambió la divisa o el timeframe, sigue
+    // haciendo fitContent() como siempre, porque ahí sí es un gráfico
+    // distinto y no hay nada previo que tenga sentido preservar.
+    const { mantenerVista = false, rangoVisiblePrevio = null } = opciones;
+
     emptyScreen.style.display = "none";
 
     // Nuevo símbolo/timeframe cargado: los dibujos manuales (líneas, fibo,
     // trazos, texto) del gráfico anterior ya no tienen sentido en esta
-    // nueva escala de tiempo/precio, así que se limpian.
-    drawings = [];
-    setActiveTool("cursor");
+    // nueva escala de tiempo/precio, así que se limpian. Si es el mismo
+    // símbolo/timeframe (replay, o solo cambió la fecha) los dibujos
+    // siguen siendo válidos y se dejan como están.
+    if (!mantenerVista) {
+      drawings = [];
+      setActiveTool("cursor");
+    }
 
     overlaySeries.forEach(s => chart.removeSeries(s));
     overlaySeries = [];
@@ -2810,10 +2918,24 @@ function crearPanel(rootEl, opciones = {}) {
     // alerta (ya ocurrió). Solo se avisa de lo que pase a partir de acá.
     revisarAlertasSEQ(true);
 
-    chart.timeScale().fitContent();
+    if (mantenerVista && rangoVisiblePrevio) {
+      // Mismo gráfico de antes (replay / solo cambió la fecha): se
+      // restaura el mismo rango LÓGICO (por índice de barra, no por
+      // tiempo) que el usuario ya tenía armado. Se usa lógico y no por
+      // tiempo porque el backend trae una ventana deslizante de velas
+      // (al avanzar el "hasta" se descartan las más viejas y entran
+      // nuevas al final) — el rango por tiempo puede no calzar con el
+      // nuevo set de datos, pero el rango lógico sí, porque el tamaño
+      // de la ventana se mantiene constante.
+      chart.timeScale().setVisibleLogicalRange(rangoVisiblePrevio);
+    } else {
+      // Gráfico realmente nuevo (cambió divisa o timeframe): recién ahí
+      // tiene sentido encuadrar todo el historial desde cero.
+      chart.timeScale().fitContent();
+    }
     requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
 
-    renderizarSMF(data.smf);
+    renderizarSMF(data.smf, mantenerVista);
     currentPosicionCanales = data.posicion_canales || [];
     renderizarPosicionBoard();
     renderizarSenales(data.signals, data.channels);
@@ -2901,6 +3023,14 @@ function crearPanel(rootEl, opciones = {}) {
       return;
     }
 
+    // Si es la misma divisa+timeframe que ya estaba cargada (típico del
+    // reproductor de replay avanzando paso a paso, o de solo cambiar la
+    // fecha), se guarda el zoom/paneo actual para restaurarlo después de
+    // traer las velas nuevas — así el gráfico no "salta" a fitContent()
+    // cada vez y el usuario no tiene que reacomodarlo a cada rato.
+    const mantenerVista = symbol === symbolActual && timeframe === timeframeActual;
+    const rangoVisiblePrevio = mantenerVista ? chart.timeScale().getVisibleLogicalRange() : null;
+
     cargandoDatos = true;
     spinner.style.display = "block";
     setEstado("Conectando a MT5…", "cargando");
@@ -2913,17 +3043,22 @@ function crearPanel(rootEl, opciones = {}) {
     params.set("auto_pivot", chkAutoPivot.checked ? "true" : "false");
 
     try {
+      console.log("[grafico] pidiendo /datos con:", params.toString());
       const res = await fetch(`${API.datos}?${params.toString()}`, {
         signal: AbortSignal.timeout(120000)
       });
       const data = await res.json();
 
       if (!res.ok) {
+        console.error("[grafico] el servidor respondió con error:", res.status, data);
         setEstado(`❌ ${data.error}`, "error");
         return;
       }
 
-      renderizarTodo(data);
+      console.log("[grafico] velas recibidas:", data.symbol, data.timeframe,
+        data.first_date, "→", data.last_date, `(${data.n_candles_total} velas, hasta pedido: ${hasta || "(vacío = en vivo)"})`);
+
+      renderizarTodo(data, { mantenerVista, rangoVisiblePrevio });
       symbolActual = symbol;
       timeframeActual = timeframe;
       setEstado("✓ Cargado", "ok");
@@ -3351,6 +3486,8 @@ function crearPanel(rootEl, opciones = {}) {
   return {
     init, cargarDatos, resize: resizeOverlayCanvas, symbolInput, setSymbol, setTimeframe,
     getChart: () => chart, getCandleSerie: () => candleSerie,
+    getTimeframe: () => timeframeSelect.value,
+    getUltimaVela: () => lastRealTime,
   };
 }
 
@@ -3360,35 +3497,331 @@ function crearPanel(rootEl, opciones = {}) {
 let panel1, panel2;
 let panel2Inicializado = false;
 let modoSplit = false;
+let modoGrafico = "online"; // "online" | "backtesting" — arranca en vivo, igual que antes.
+
+// El link al tablero multi-divisa tiene que apuntar SIEMPRE al servidor
+// (API), no a una ruta relativa — si este archivo se abre directo desde
+// el disco (file:///C:/...) en vez de vía http://localhost:5051/, una
+// ruta relativa como "/tablero" se resuelve contra file:/// y rompe.
+// Además, si hay una fecha/hora puesta en el selector global, se la
+// suma como ?hasta=&modo=backtesting — así el tablero abre directo en
+// modo backtesting con el MISMO instante que se está viendo acá,
+// cerrando el círculo gráfico → tablero (igual que ya funciona
+// tablero → gráfico con el atajo ?symbol=&timeframe=&hasta=).
+function actualizarLinkTablero() {
+  const hasta = document.getElementById("fecha-global").value;
+  const url = new URL(API.tablero, window.location.origin);
+  if (hasta) {
+    url.searchParams.set("hasta", hasta);
+    url.searchParams.set("modo", "backtesting");
+  }
+  document.getElementById("btn-multitf").href = url.pathname + url.search;
+}
+
+// ══════════════════════════════════════════════════════════
+// Reproductor de backtesting (⏮ ▶/⏸ ⏭ + velocidad) — avanza el
+// "hasta" solo, vela a vela, y recarga como si el mercado estuviera
+// corriendo en vivo hasta ese instante.
+// ══════════════════════════════════════════════════════════
+const TF_MINUTOS = {
+  M1: 1, M5: 5, M15: 15, M30: 30,
+  H1: 60, H2: 120, H3: 180, H4: 240, H6: 360, H8: 480, H12: 720,
+  D1: 1440, W1: 10080, MN1: 43200,
+};
+const INTERVALO_BASE_MS = 1500;   // a velocidad 1x, espera entre paso y paso
+
+let reproduciendo = false;
+let timeoutReproductor = null;
+
+// El paso sigue la temporalidad del PANEL 1 — si hay 2 pantallas con
+// temporalidades distintas, el paso se calcula siempre sobre la del
+// panel principal (izquierdo).
+function pasoEnMinutos() {
+  const tf = panel1 ? panel1.getTimeframe() : "H1";
+  return TF_MINUTOS[tf] || 60;
+}
+
+function fechaGlobalComoDate() {
+  const val = document.getElementById("fecha-global").value;
+  // El input datetime-local no trae zona horaria — se interpreta en
+  // hora LOCAL del navegador, la misma que el usuario ve y tipea, así
+  // el paso "+1 vela" no se corre por husos horarios.
+  return val ? new Date(val) : new Date();
+}
+
+// ══════════════════════════════════════════════════════════
+// Fin de semana / mercado cerrado (horario Colombia).
+// El forex cierra el viernes al final de la tarde y vuelve a abrir el
+// domingo también al final de la tarde — en horario Colombia queda
+// entre las 16:00 y las 17:00 según la época del año (por el cambio de
+// horario en EE.UU., que corre el cierre/apertura real 1 hora). Se usan
+// las 17:00 como límite: es la opción más conservadora — en el peor
+// caso el reproductor se detiene o salta hasta 1 hora antes/después de
+// que el mercado haya abierto/cerrado en verdad, nunca "salta" horas
+// donde el mercado sigue operando. Si en la práctica hace falta más
+// precisión, se ajusta acá.
+const MERCADO_CIERRA_VIERNES_HORA = 17;
+const MERCADO_ABRE_DOMINGO_HORA = 17;
+
+function mercadoCerrado(fecha) {
+  const dia = fecha.getDay();               // 0=domingo … 5=viernes, 6=sábado
+  const hora = fecha.getHours();
+  if (dia === 6) return true;                                            // sábado: cerrado todo el día
+  if (dia === 5 && hora >= MERCADO_CIERRA_VIERNES_HORA) return true;      // viernes, después del cierre
+  if (dia === 0 && hora < MERCADO_ABRE_DOMINGO_HORA) return true;         // domingo, antes de la apertura
+  return false;
+}
+
+// Dada una fecha/hora dentro del fin de semana (mercadoCerrado === true),
+// devuelve el momento exacto en que el mercado vuelve a abrir (el
+// domingo que sigue, a la hora de apertura).
+function proximaAperturaMercado(fecha) {
+  const diasHastaDomingo = (7 - fecha.getDay()) % 7;
+  const apertura = new Date(fecha);
+  apertura.setDate(apertura.getDate() + diasHastaDomingo);
+  apertura.setHours(MERCADO_ABRE_DOMINGO_HORA, 0, 0, 0);
+  return apertura;
+}
+
+// Lo mismo pero yendo hacia atrás: devuelve el cierre del viernes
+// anterior a esa fecha (para cuando se retrocede ⏮ y se cae dentro del
+// fin de semana).
+function cierreViernesAnterior(fecha) {
+  const diasDesdeViernes = (fecha.getDay() + 2) % 7;
+  const cierre = new Date(fecha);
+  cierre.setDate(cierre.getDate() - diasDesdeViernes);
+  cierre.setHours(MERCADO_CIERRA_VIERNES_HORA, 0, 0, 0);
+  return cierre;
+}
+
+function setFechaGlobal(date) {
+  date.setSeconds(0, 0);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  document.getElementById("fecha-global").value = local.toISOString().slice(0, 16);
+  actualizarLinkTablero();
+  actualizarLimiteReproductor();
+}
+
+async function avanzarPasoYCargar(direccion) {
+  const ultimaVelaAntes = panel1.getUltimaVela();
+  const fecha = fechaGlobalComoDate();
+  const ahora = new Date();
+  let llegoAlPresente = false;
+  const MAX_SALTOS = 60; // tope de seguridad para no colgar el navegador si nunca aparece vela nueva
+
+  for (let intento = 0; intento < MAX_SALTOS; intento++) {
+    fecha.setMinutes(fecha.getMinutes() + direccion * pasoEnMinutos());
+
+    // Fin de semana: en vez de ir tickeando hora por hora sin velas
+    // nuevas (la bolsa está cerrada, no hay nada que cargar), se salta
+    // directo a la próxima apertura/cierre — así el replay no pierde
+    // tiempo pasando por horas donde el mercado no operó.
+    if (mercadoCerrado(fecha)) {
+      fecha.setTime((direccion > 0 ? proximaAperturaMercado(fecha) : cierreViernesAnterior(fecha)).getTime());
+    }
+
+    // No se puede "backtestear" el futuro: si el paso hacia adelante se
+    // pasa de la hora actual, se lo recorta a "ahora mismo" y se frena
+    // el reproductor después de cargar ese último tramo.
+    if (direccion > 0 && fecha >= ahora) {
+      fecha.setTime(ahora.getTime());
+      llegoAlPresente = true;
+    }
+
+    setFechaGlobal(fecha);
+    marcarHastaEnPantalla();
+
+    const cargas = [panel1.cargarDatos()];
+    if (modoSplit && panel2) cargas.push(panel2.cargarDatos());
+    await Promise.all(cargas);
+
+    if (llegoAlPresente) break;
+
+    // Si ya apareció una vela distinta a la que había antes de avanzar,
+    // no hace falta seguir saltando. Si la última vela sigue siendo la
+    // misma de siempre (ej. cayó justo al reabrir el domingo y todavía
+    // no cerró ninguna vela nueva, o esa hora puntual no tuvo datos),
+    // se sigue avanzando un paso más solo, sin que el usuario tenga que
+    // tocar nada — así nunca se "queda pegado" mostrando una fecha
+    // distinta a la vela real que se ve en el gráfico.
+    const ultimaVelaAhora = panel1.getUltimaVela();
+    console.log(`[replay] intento ${intento + 1}/${MAX_SALTOS} — hasta=${document.getElementById("fecha-global").value} · última vela antes=${ultimaVelaAntes} ahora=${ultimaVelaAhora} · ${ultimaVelaAhora !== ultimaVelaAntes ? "vela nueva, freno" : "sigue igual, sigo saltando"}`);
+    if (ultimaVelaAhora !== ultimaVelaAntes) break;
+  }
+
+  if (llegoAlPresente) pausarReproductor();
+}
+
+// Deshabilita ▶ y ⏭ cuando el "hasta" ya llegó a la hora actual — no
+// tiene sentido seguir avanzando (ni automática ni manualmente) más
+// allá del presente.
+function actualizarLimiteReproductor() {
+  const alPresente = fechaGlobalComoDate() >= new Date();
+  document.getElementById("btn-play-pause").disabled = alPresente;
+  document.getElementById("btn-paso-adelante").disabled = alPresente;
+}
+
+function actualizarBotonPlay() {
+  const boton = document.getElementById("btn-play-pause");
+  boton.textContent = reproduciendo ? "⏸" : "▶";
+  boton.title = reproduciendo ? "Pausar" : "Reproducir (avanza solo, vela a vela)";
+  boton.classList.toggle("reproduciendo", reproduciendo);
+}
+
+// Guarda qué "hasta" está reflejado AHORA en el gráfico — para saber si
+// hace falta cargar la fecha tal cual está puesta antes de arrancar a
+// avanzar (ver playReproductor), o si el gráfico ya está al día.
+let hastaEnPantalla = null;
+function marcarHastaEnPantalla() {
+  hastaEnPantalla = document.getElementById("fecha-global").value;
+}
+
+async function tickReproductor() {
+  if (!reproduciendo) return;
+  await avanzarPasoYCargar(1);
+  if (!reproduciendo) return;   // se pudo haber pausado MIENTRAS cargaba
+  const velocidad = parseFloat(document.getElementById("velocidad-reproductor").value) || 1;
+  timeoutReproductor = setTimeout(tickReproductor, INTERVALO_BASE_MS / velocidad);
+}
+
+async function playReproductor() {
+  if (reproduciendo) return;
+  reproduciendo = true;
+  actualizarBotonPlay();
+
+  // Si la fecha/hora puesta todavía no es la que está mostrando el
+  // gráfico (se acaba de tipear, o recién se entró a Backtesting), se
+  // carga primero TAL CUAL está — sin avanzar todavía — para que el
+  // replay arranque exactamente desde ahí. Recién después empieza a
+  // avanzar solo, vela a vela.
+  const hastaPedida = document.getElementById("fecha-global").value;
+  if (hastaPedida !== hastaEnPantalla) {
+    const cargas = [panel1.cargarDatos()];
+    if (modoSplit && panel2) cargas.push(panel2.cargarDatos());
+    await Promise.all(cargas);
+    marcarHastaEnPantalla();
+    if (!reproduciendo) return;   // se pudo pausar mientras cargaba
+  }
+
+  tickReproductor();
+}
+
+function pausarReproductor() {
+  reproduciendo = false;
+  if (timeoutReproductor) { clearTimeout(timeoutReproductor); timeoutReproductor = null; }
+  actualizarBotonPlay();
+}
+
+// ══════════════════════════════════════════════════════════
+// Modo Online / Modo Backtesting — pantalla de gráfico solamente.
+// Online: siempre "hasta" vacío (la última vela en vivo), sin selector
+// de fecha ni reproductor a la vista — igual que funcionaba antes de
+// que existiera el backtesting. Backtesting: aparecen la fecha/hora y
+// el reproductor, y "hasta" viaja en cada pedido al servidor.
+// ══════════════════════════════════════════════════════════
+function actualizarUIModoGrafico() {
+  const enBacktesting = modoGrafico === "backtesting";
+  document.getElementById("controles-backtesting").classList.toggle("visible", enBacktesting);
+  document.getElementById("btn-modo-online").classList.toggle("activo", !enBacktesting);
+  document.getElementById("btn-modo-backtesting").classList.toggle("activo", enBacktesting);
+}
+
+function recargarPaneles() {
+  if (!panel1) return;
+  marcarHastaEnPantalla();
+  panel1.cargarDatos();
+  if (modoSplit && panel2) panel2.cargarDatos();
+}
+
+function activarModoOnline(opciones = {}) {
+  const { recargar = true } = opciones;
+  pausarReproductor();
+  modoGrafico = "online";
+  document.getElementById("fecha-global").value = "";
+  actualizarUIModoGrafico();
+  actualizarLinkTablero();
+  if (recargar) recargarPaneles();
+}
+
+function activarModoBacktesting(opciones = {}) {
+  const { recargar = true } = opciones;
+  modoGrafico = "backtesting";
+  // Si no había fecha puesta (vino de Modo Online), arranca en "ahora"
+  // — desde ahí se puede retroceder con ⏮ o tipear una fecha/hora pasada.
+  if (!document.getElementById("fecha-global").value) {
+    setFechaGlobal(new Date());
+  } else {
+    actualizarLimiteReproductor();
+  }
+  actualizarUIModoGrafico();
+  actualizarLinkTablero();
+  if (recargar) recargarPaneles();
+}
 
 window.addEventListener("load", () => {
-  document.getElementById("fecha-global").value = new Date().toISOString().slice(0, 10);
-
   // ── Atajo desde el tablero multi-temporalidad: si la URL trae
   // ?symbol=...&timeframe=...&hasta=..., se precargan esos valores y se
   // dispara la carga automáticamente — así un click en una fila del
   // tablero (ej. "AUDUSD, H4") abre el gráfico ya armado, sin tener que
-  // configurar nada a mano. ──
+  // configurar nada a mano. "hasta" puede venir como solo fecha
+  // ("2026-03-20", enlaces viejos → se completa a las 23:59) o como
+  // fecha y hora completa ("2026-03-20T14:30"). Si viene "hasta" (o
+  // ?modo=backtesting explícito) arranca directo en Modo Backtesting;
+  // si no, arranca en Modo Online — igual que funcionaba antes de que
+  // existiera todo esto. ──
   const urlParams = new URLSearchParams(window.location.search);
   const atajoSymbol = urlParams.get("symbol");
   const atajoTimeframe = urlParams.get("timeframe");
-  const atajoHasta = urlParams.get("hasta");
-  if (atajoHasta) document.getElementById("fecha-global").value = atajoHasta;
+  let atajoHasta = urlParams.get("hasta");
+  if (atajoHasta) {
+    if (!atajoHasta.includes("T")) atajoHasta += "T23:59";
+    document.getElementById("fecha-global").value = atajoHasta;
+  }
+  const arrancaEnBacktesting = !!atajoHasta || urlParams.get("modo") === "backtesting";
 
   panel1 = crearPanel(document.getElementById("panel-1"));
   panel1.init();
 
   if (atajoSymbol) panel1.setSymbol(atajoSymbol.toUpperCase());
   if (atajoTimeframe) panel1.setTimeframe(atajoTimeframe);
-  if (atajoSymbol) panel1.cargarDatos();
+
+  if (arrancaEnBacktesting) {
+    activarModoBacktesting({ recargar: false });
+    if (atajoSymbol) panel1.cargarDatos();
+  } else {
+    activarModoOnline({ recargar: false });
+    if (atajoSymbol) panel1.cargarDatos();
+  }
 
   document.getElementById("btn-split").addEventListener("click", toggleSplit);
+  document.getElementById("btn-modo-online").addEventListener("click", () => activarModoOnline());
+  document.getElementById("btn-modo-backtesting").addEventListener("click", () => activarModoBacktesting());
 
-  // El link al tablero multi-divisa tiene que apuntar SIEMPRE al servidor
-  // (API), no a una ruta relativa — si este archivo se abre directo desde
-  // el disco (file:///C:/...) en vez de vía http://localhost:5051/, una
-  // ruta relativa como "/tablero" se resuelve contra file:/// y rompe.
-  document.getElementById("btn-multitf").href = API.tablero;
+  actualizarLinkTablero();
+  document.getElementById("fecha-global").addEventListener("change", actualizarLinkTablero);
+  // Si el usuario toca la fecha a mano mientras está reproduciendo, se
+  // pausa solo — si no, el próximo tick pisaría el cambio manual con
+  // el paso automático.
+  document.getElementById("fecha-global").addEventListener("change", () => {
+    actualizarLimiteReproductor();
+    if (reproduciendo) pausarReproductor();
+    // Si se tipeó la fecha a mano estando en Backtesting, se carga de
+    // una con ese valor — así "Play" o "⏭" ya arrancan desde ahí, en
+    // vez de mostrar el gráfico viejo hasta que se avance un paso.
+    if (modoGrafico === "backtesting") recargarPaneles();
+  });
+
+  document.getElementById("btn-play-pause").addEventListener("click", () => {
+    reproduciendo ? pausarReproductor() : playReproductor();
+  });
+  document.getElementById("btn-paso-atras").addEventListener("click", () => {
+    pausarReproductor();
+    avanzarPasoYCargar(-1);
+  });
+  document.getElementById("btn-paso-adelante").addEventListener("click", () => {
+    pausarReproductor();
+    avanzarPasoYCargar(1);
+  });
 
   verificarServidor();
   setInterval(verificarServidor, 5000);
