@@ -96,6 +96,29 @@ def api_datos(request):
 
 
 @login_required
+def api_vela_actual(request):
+    """
+    Endpoint liviano para el "modo online": trae SOLO la vela en
+    formación (sin todo el historial), para sondearlo cada pocos
+    segundos y que la vela "viva" en tiempo real en el gráfico — igual
+    que MT5/TradingView — sin el costo de recargar /datos completo.
+    """
+    symbol = request.GET.get("symbol", "").strip()
+    timeframe = request.GET.get("timeframe", "").strip()
+    if not symbol or not timeframe:
+        return JsonResponse({"error": "faltan symbol/timeframe"}, status=400)
+
+    try:
+        vela = analysis.fetch_vela_actual(symbol, timeframe)
+    except Exception as e:
+        return JsonResponse({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+    if vela is None:
+        return JsonResponse({"error": "sin datos"}, status=404)
+    return JsonResponse(vela)
+
+
+@login_required
 def api_velas_extra(request):
     """Botón 'Cargar más historial' — mismo contrato que /velas_extra del
     servidor Flask original: trae un lote de velas más viejas que las que

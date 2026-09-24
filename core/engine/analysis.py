@@ -18,6 +18,7 @@ smart_money_flow, evaluar_todos_spn, etc.).
 import logging
 import os
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -298,6 +299,92 @@ def _parse_hasta(hasta: str) -> datetime:
     return datetime.strptime(hasta, "%Y-%m-%d") + timedelta(days=1)
 
 
+# ══════════════════════════════════════════════════════════
+# Caché en memoria del rango de velas ya traído de MT5, por (symbol,
+# timeframe). Pensada específicamente para el replay/backtesting: cada
+# "tick" del reproductor pide un rango que es CASI el mismo que el
+# tick anterior (corrido apenas una vela para adelante o atrás) — sin
+# esta caché, cada tick sale a golpear al terminal MT5 (y por lo tanto
+# al servidor del bróker) de nuevo por historial que, en la práctica,
+# ya se había traído hace un instante. Con la caché, la enorme mayoría
+# de los ticks de un replay se sirven desde memoria, sin tocar MT5 para
+# nada — así el ritmo de pedidos reales al bróker no depende de la
+# velocidad del reproductor.
+# ══════════════════════════════════════════════════════════
+_rates_cache_lock = threading.Lock()
+_rates_cache = {}   # (symbol, timeframe) -> {"date_from", "date_to", "rates", "consultado_en"}
+_RATES_CACHE_MAX_ENTRADAS = 30       # tope de símbolo+timeframe distintos guardados a la vez
+_RATES_CACHE_TTL_EN_VIVO = timedelta(seconds=5)  # en modo online, la caché vence rápido (precio se mueve)
+
+
+def _rates_desde_cache(cache_key, date_to, bars_cap, en_vivo):
+    with _rates_cache_lock:
+        entrada = _rates_cache.get(cache_key)
+    if entrada is None:
+        return None
+    if en_vivo and (datetime.now() - entrada["consultado_en"]) > _RATES_CACHE_TTL_EN_VIVO:
+        return None   # en vivo: la caché venció, hay que refrescar contra MT5
+    if date_to > entrada["date_to"]:
+        return None   # lo pedido queda más adelante de lo que tenemos cacheado
+    recorte = entrada["rates"][entrada["rates"]["time"] <= int(date_to.timestamp())]
+    if len(recorte) < bars_cap:
+        return None   # la caché no alcanza para atrás, hace falta ir a buscar más
+    return recorte[-bars_cap:]
+
+
+def _guardar_en_cache(cache_key, date_from, date_to, rates):
+    with _rates_cache_lock:
+        if cache_key not in _rates_cache and len(_rates_cache) >= _RATES_CACHE_MAX_ENTRADAS:
+            _rates_cache.pop(next(iter(_rates_cache)), None)   # descarta la más vieja, sin crecer sin límite
+        _rates_cache[cache_key] = {
+            "date_from": date_from, "date_to": date_to,
+            "rates": rates, "consultado_en": datetime.now(),
+        }
+
+
+def fetch_vela_actual(symbol: str, timeframe: str):
+    """
+    Trae SOLO la última vela (la que está en formación ahora mismo) —
+    sin descargar todo el historial. Pensada para el "modo online" del
+    gráfico: sondear esto cada pocos segundos y actualizar nada más esa
+    vela en el frontend (candleSerie.update()) es muchísimo más liviano
+    que volver a pedir /datos completo cada vez, y es lo que permite ver
+    la vela "vivir" en tiempo real — igual que MT5/TradingView.
+
+    Devuelve un dict {time, open, high, low, close} o None si no hay
+    datos disponibles.
+    """
+    if mt5 is None:
+        raise Mt5Unavailable("el paquete MetaTrader5 no está instalado en este Python "
+                              "(pip install MetaTrader5 — solo funciona en Windows)")
+
+    tf_attr = _TF_MAP.get(timeframe.upper())
+    if tf_attr is None:
+        raise Mt5DataError(f"timeframe '{timeframe}' no reconocido. "
+                            f"Usa uno de: {', '.join(_TF_MAP)}")
+    mt5_tf = getattr(mt5, tf_attr)
+
+    with mt5_session():
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            raise Mt5DataError(f"el símbolo '{symbol}' no existe en tu Market Watch.")
+        if not symbol_info.visible:
+            mt5.symbol_select(symbol, True)
+
+        rates = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, 1)
+        if rates is None or len(rates) == 0:
+            return None
+
+        r = rates[-1]
+        return {
+            "time": int(r["time"]),
+            "open": float(r["open"]),
+            "high": float(r["high"]),
+            "low": float(r["low"]),
+            "close": float(r["close"]),
+        }
+
+
 def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
     """
     Descarga velas EN VIVO desde el terminal MT5 abierto en esta PC.
@@ -355,27 +442,37 @@ def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
         logger.info("[fetch_mt5_candles] %s %s — hasta recibido=%r → date_to=%s (en_vivo=%s)",
                     symbol, timeframe, hasta, date_to, range_reaches_today)
 
-        days_back = max(int(bars_cap * 1.5 / max(bars_per_day, 0.01)), 30)
-        max_days_back = 365 * 20
-        rates = None
-        while True:
-            date_from = date_to - timedelta(days=days_back)
-            rates_range = mt5.copy_rates_range(symbol, mt5_tf, date_from, date_to)
+        cache_key = (symbol.upper(), timeframe.upper())
+        rates = _rates_desde_cache(cache_key, date_to, bars_cap, range_reaches_today)
 
-            if rates_range is not None and len(rates_range) >= bars_cap:
-                rates = rates_range[-bars_cap:]
-                break
-            if days_back >= max_days_back:
-                rates = rates_range
-                break
-            days_back = min(days_back * 3, max_days_back)
+        if rates is not None:
+            logger.info("[fetch_mt5_candles] %s %s — servido desde caché en memoria, "
+                        "SIN consultar MT5/bróker (%d velas)", symbol, timeframe, len(rates))
+        else:
+            days_back = max(int(bars_cap * 1.5 / max(bars_per_day, 0.01)), 30)
+            max_days_back = 365 * 20
+            date_from = date_to
+            while True:
+                date_from = date_to - timedelta(days=days_back)
+                rates_range = mt5.copy_rates_range(symbol, mt5_tf, date_from, date_to)
 
-        if range_reaches_today and rates is not None and len(rates) > 0:
-            latest = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, 1)
-            if latest is not None and len(latest) > 0 and latest[-1]["time"] > rates[-1]["time"]:
-                rates = np.concatenate([rates, latest])
-                if len(rates) > bars_cap:
-                    rates = rates[-bars_cap:]
+                if rates_range is not None and len(rates_range) >= bars_cap:
+                    rates = rates_range[-bars_cap:]
+                    break
+                if days_back >= max_days_back:
+                    rates = rates_range
+                    break
+                days_back = min(days_back * 3, max_days_back)
+
+            if range_reaches_today and rates is not None and len(rates) > 0:
+                latest = mt5.copy_rates_from_pos(symbol, mt5_tf, 0, 1)
+                if latest is not None and len(latest) > 0 and latest[-1]["time"] > rates[-1]["time"]:
+                    rates = np.concatenate([rates, latest])
+                    if len(rates) > bars_cap:
+                        rates = rates[-bars_cap:]
+
+            if rates is not None and len(rates) > 0:
+                _guardar_en_cache(cache_key, date_from, date_to, rates)
 
         if rates is None or len(rates) == 0:
             raise Mt5DataError(f"MT5 no devolvió velas para {symbol} {timeframe} "

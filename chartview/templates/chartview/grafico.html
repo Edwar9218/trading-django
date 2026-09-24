@@ -888,6 +888,7 @@
 // ahora todo vive bajo el mismo origen que esta página).
 const API = {
   datos: "{% url 'chartview:api_datos' %}",
+  vela_actual: "{% url 'chartview:api_vela_actual' %}",
   velas_extra: "{% url 'chartview:api_velas_extra' %}",
   config: "{% url 'chartview:api_config' %}",
   ping: "{% url 'chartview:api_ping' %}",
@@ -2852,6 +2853,20 @@ function crearPanel(rootEl, opciones = {}) {
     }
   }
 
+  // Respaldo por si el bróker no informó "digits" para este símbolo:
+  // infiere la precisión a ojo, a partir de la magnitud del precio —
+  // igual que hace cualquier plataforma cuando tiene que adivinar.
+  // Forex "directo" (EURUSD, NZDUSD...) cotiza por debajo de 20 y usa
+  // 5 decimales; los cruces con yen (USDJPY, EURJPY...) cotizan sobre
+  // 100+ y usan 3; lo demás (acciones, índices, cripto) se deja en 2.
+  function inferirPrecisionPorPrecio(candles) {
+    if (!candles || !candles.length) return 2;
+    const precio = candles[candles.length - 1].close;
+    if (precio > 0 && precio < 20) return 5;
+    if (precio >= 20 && precio < 1000) return 3;
+    return 2;
+  }
+
   function renderizarTodo(data, opciones = {}) {
     // mantenerVista: true cuando el símbolo/timeframe no cambiaron respecto
     // a la carga anterior (ej. el reproductor de replay avanzando un paso,
@@ -2885,6 +2900,21 @@ function crearPanel(rootEl, opciones = {}) {
       setEstado("❌ Sin velas (F12 consola)", "error");
       return;
     }
+
+    // El eje de precio (derecha) por defecto de la librería redondea a
+    // 2 decimales — perfecto para acciones/índices, pero para forex
+    // (ej. NZDUSD ~0.56770) deja el precio ilegible, todo amontonado
+    // en "0.57". MT5 ya sabe la cantidad exacta de decimales que usa
+    // CADA símbolo según su bróker (data.digits, calculado en
+    // fetch_mt5_candles) — se la pasamos a la serie para que el precio
+    // se vea completo, igual que en MT5. Si por algún motivo puntual
+    // el bróker no informó "digits" (raro, pero por las dudas), se
+    // infiere a partir del precio mismo en vez de quedarse con el
+    // default de 2 decimales.
+    const precision = data.digits != null ? data.digits : inferirPrecisionPorPrecio(data.candles);
+    const minMove = 1 / Math.pow(10, precision);
+    candleSerie.applyOptions({ priceFormat: { type: "price", precision, minMove } });
+    console.log(`[grafico] precio — digits de MT5: ${data.digits} · precisión aplicada: ${precision} decimales`);
 
     candleSerie.setData(data.candles);
 
@@ -3483,11 +3513,34 @@ function crearPanel(rootEl, opciones = {}) {
     }
   }
 
+  function actualizarVelaViva(vela) {
+    // Actualiza (o agrega) SOLO la última vela, en vez de recargar todo
+    // el gráfico — así se ve el precio "vivir" en tiempo real (como en
+    // MT5/TradingView) sin el costo ni el parpadeo de un /datos
+    // completo. Si el tiempo de la vela es el mismo que ya estaba
+    // mostrando, la actualiza en el lugar; si es más nueva (arrancó una
+    // vela nueva del timeframe), la agrega al final sola.
+    if (!vela || !symbolActual) return;
+    try {
+      candleSerie.update(vela);
+      if (lastRealTime === null || vela.time >= lastRealTime) lastRealTime = vela.time;
+    } catch (e) {
+      // Puede pasar justo al cambiar de símbolo/timeframe, si un
+      // sondeo que ya estaba en vuelo responde después de que cambió
+      // lo que hay cargado — se ignora, el próximo /datos completo
+      // deja todo bien de nuevo.
+    }
+  }
+
   return {
     init, cargarDatos, resize: resizeOverlayCanvas, symbolInput, setSymbol, setTimeframe,
     getChart: () => chart, getCandleSerie: () => candleSerie,
     getTimeframe: () => timeframeSelect.value,
     getUltimaVela: () => lastRealTime,
+    estaCargando: () => cargandoDatos,
+    getSymbolActual: () => symbolActual,
+    getTimeframeActual: () => timeframeActual,
+    actualizarVelaViva,
   };
 }
 
@@ -3529,6 +3582,8 @@ const TF_MINUTOS = {
   D1: 1440, W1: 10080, MN1: 43200,
 };
 const INTERVALO_BASE_MS = 1500;   // a velocidad 1x, espera entre paso y paso
+const INTERVALO_MIN_MS = 300;     // piso de seguridad: nunca menos que esto entre pedidos al servidor,
+                                   // sin importar la velocidad — para no bombardear MT5/el bróker.
 
 let reproduciendo = false;
 let timeoutReproductor = null;
@@ -3681,7 +3736,7 @@ async function tickReproductor() {
   await avanzarPasoYCargar(1);
   if (!reproduciendo) return;   // se pudo haber pausado MIENTRAS cargaba
   const velocidad = parseFloat(document.getElementById("velocidad-reproductor").value) || 1;
-  timeoutReproductor = setTimeout(tickReproductor, INTERVALO_BASE_MS / velocidad);
+  timeoutReproductor = setTimeout(tickReproductor, Math.max(INTERVALO_BASE_MS / velocidad, INTERVALO_MIN_MS));
 }
 
 async function playReproductor() {
@@ -3713,11 +3768,60 @@ function pausarReproductor() {
 }
 
 // ══════════════════════════════════════════════════════════
+// "Vela viva": en Modo Online, sondea cada pocos segundos SOLO la vela
+// en formación (sin recargar todo /datos) y la actualiza en el gráfico
+// — así el precio se ve "moverse" en tiempo real, igual que en
+// MT5/TradingView, sin el costo de un refresco completo.
+// ══════════════════════════════════════════════════════════
+const INTERVALO_VELA_VIVA_MS = 2000;
+let intervaloVelaViva = null;
+
+function cargandoAlgunPanel() {
+  return !!(panel1 && panel1.estaCargando()) || !!(modoSplit && panel2 && panel2.estaCargando());
+}
+
+async function actualizarVelaVivaPanel(panel) {
+  // Usa el símbolo/timeframe REALMENTE cargado en el panel, no lo que
+  // esté tipeado sin confirmar todavía (evitaría dibujar velas de un
+  // símbolo distinto al que se ve en pantalla).
+  const symbol = panel.getSymbolActual();
+  const timeframe = panel.getTimeframeActual();
+  if (!symbol || !timeframe) return;
+  try {
+    const params = new URLSearchParams({ symbol, timeframe });
+    const res = await fetch(`${API.vela_actual}?${params.toString()}`, {
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!res.ok) return;   // símbolo inválido, sin datos, servidor caído: se ignora, reintenta solo
+    const vela = await res.json();
+    panel.actualizarVelaViva(vela);
+  } catch (e) {
+    // Timeout / sin conexión momentánea — no interrumpe nada, se
+    // reintenta solo en el próximo sondeo (2s después).
+  }
+}
+
+function iniciarVelaViva() {
+  detenerVelaViva();
+  intervaloVelaViva = setInterval(() => {
+    if (modoGrafico !== "online" || cargandoAlgunPanel()) return;
+    actualizarVelaVivaPanel(panel1);
+    if (modoSplit && panel2) actualizarVelaVivaPanel(panel2);
+  }, INTERVALO_VELA_VIVA_MS);
+}
+
+function detenerVelaViva() {
+  if (intervaloVelaViva) { clearInterval(intervaloVelaViva); intervaloVelaViva = null; }
+}
+
+// ══════════════════════════════════════════════════════════
 // Modo Online / Modo Backtesting — pantalla de gráfico solamente.
 // Online: siempre "hasta" vacío (la última vela en vivo), sin selector
 // de fecha ni reproductor a la vista — igual que funcionaba antes de
-// que existiera el backtesting. Backtesting: aparecen la fecha/hora y
-// el reproductor, y "hasta" viaja en cada pedido al servidor.
+// que existiera el backtesting, más la vela viva de arriba. Backtesting:
+// aparecen la fecha/hora y el reproductor, y "hasta" viaja en cada
+// pedido al servidor (sin vela viva — ahí el tiempo lo maneja el
+// reproductor, no el reloj real).
 // ══════════════════════════════════════════════════════════
 function actualizarUIModoGrafico() {
   const enBacktesting = modoGrafico === "backtesting";
@@ -3741,10 +3845,12 @@ function activarModoOnline(opciones = {}) {
   actualizarUIModoGrafico();
   actualizarLinkTablero();
   if (recargar) recargarPaneles();
+  iniciarVelaViva();
 }
 
 function activarModoBacktesting(opciones = {}) {
   const { recargar = true } = opciones;
+  detenerVelaViva();
   modoGrafico = "backtesting";
   // Si no había fecha puesta (vino de Modo Online), arranca en "ahora"
   // — desde ahí se puede retroceder con ⏮ o tipear una fecha/hora pasada.
