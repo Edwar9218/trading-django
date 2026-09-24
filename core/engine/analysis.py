@@ -16,6 +16,7 @@ smart_money_flow, evaluar_todos_spn, etc.).
 """
 
 import logging
+import math
 import os
 import sys
 import threading
@@ -492,6 +493,12 @@ def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
             "close": raw["close"].astype(float),
             "volume": raw["tick_volume"].astype(float),
         }).reset_index(drop=True)
+        # Decimales reales del símbolo según el bróker: el front los usa
+        # para formatear el eje de precio (data.digits).
+        try:
+            out.attrs["digits"] = int(symbol_info.digits)
+        except (AttributeError, TypeError, ValueError):
+            pass
 
         etiqueta = f"MT5 en vivo — {symbol} {timeframe.upper()} ({len(out)} velas, hasta {out['datetime'].iloc[-1]})"
         return out, etiqueta
@@ -652,6 +659,23 @@ MEDIUM_DEFAULTS = dict(pivot_len=18, atr_len=10, min_bars=8, max_bars=100, quali
 SHORT_DEFAULTS = dict(pivot_len=6, atr_len=8, min_bars=4, max_bars=80, quality=0.5,
                        recent_n=15, lookback_pairs=10, replace_ratio=0.7,
                        range=(3, 15, 1), label="Canal corto")
+
+
+def _limpiar_nan(o):
+    """Reemplaza NaN / +-inf por None (-> null en JSON), recursivamente.
+
+    Python serializa float('nan') como NaN, que NO es JSON válido: el
+    navegador falla en `await res.json()` aunque el servidor haya
+    respondido 200, y el front lo muestra como "No se pudo conectar al
+    servidor". Esto se aplica al payload final de compute_analysis().
+    """
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _limpiar_nan(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_limpiar_nan(v) for v in o]
+    return o
 
 
 def compute_analysis(symbol=None, timeframe_override=None, hasta=None, auto_pivot_override=None):
@@ -839,7 +863,7 @@ def compute_analysis(symbol=None, timeframe_override=None, hasta=None, auto_pivo
                 },
             })
 
-    return {
+    return _limpiar_nan({
         "symbol": symbol,
         "timeframe": timeframe,
         "source": source,
@@ -851,10 +875,11 @@ def compute_analysis(symbol=None, timeframe_override=None, hasta=None, auto_pivo
         "posicion_canales": posicion_json,
         "signals": dict(sig),
         "n_candles_total": len(data),
+        "digits": data.attrs.get("digits"),
         "auto_pivot": auto_pivot,
         "last_date": data["datetime"].iloc[-1].strftime("%Y-%m-%d %H:%M"),
         "first_date": data["datetime"].iloc[0].strftime("%Y-%m-%d %H:%M"),
-    }
+    })
 
 
 # ══════════════════════════════════════════════════════════
