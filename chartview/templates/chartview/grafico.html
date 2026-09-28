@@ -692,6 +692,99 @@
     .empty-screen svg { opacity: .25; }
   </style>
 </style>
+
+<style id="layout-compacto">
+  /* ═══════════════════════════════════════════════════════════
+     Layout compacto — prioridad al gráfico.
+     Solo cambia la ORGANIZACIÓN visual; ningún indicador, control
+     ni dato se elimina. Va al final para pisar los estilos de arriba.
+     ═══════════════════════════════════════════════════════════ */
+  header.topbar { padding-top: 5px; padding-bottom: 5px; }
+
+  /* Barra global: más baja */
+  #global-bar { padding: 4px 12px; gap: 8px; }
+  #fecha-global { padding: 3px 7px; font-size: 12px; min-width: 165px; }
+  .modo-btn { padding: 3px 10px; }
+  #btn-split, #btn-multitf, #btn-enfoque { padding: 3px 10px; }
+  #reproductor button { width: 28px; height: 24px; }
+  #velocidad-reproductor { padding: 3px 5px; }
+  #btn-enfoque {
+    background: transparent; border: 1px solid #363c4e; border-radius: 6px;
+    color: #d1d4dc; font-size: 12px; cursor: pointer; transition: all .15s;
+  }
+  #btn-enfoque:hover, body.menu-abierto #btn-enfoque { border-color: #2962ff; color: #2962ff; }
+  /* Sin barra de navegación arriba (Tablero de Canales / Tablero / Gráfico /
+     usuario) ni botón Multi-temporalidad: solo ocupaban espacio. El botón
+     "⌂" es la única forma de volver a mostrar la barra si la necesitas. */
+  header.topbar { display: none !important; }
+  body.menu-abierto header.topbar { display: flex !important; }
+  #btn-multitf { display: none !important; }   /* sigue en el DOM: el JS le asigna su enlace */
+
+  /* Fila 1 de cada panel: Divisa · Timeframe · Cargar · Filtros · info — todo en UNA línea */
+  .panel-topbar { flex-wrap: wrap; gap: 4px 8px; padding: 5px 10px; }
+  .panel-topbar > * { flex-shrink: 0; }
+  /* La info (☰) arranca oculta; al abrirla usa el espacio que sobre y, si no cabe, baja a su propia línea */
+  .panel-topbar .info-bar { flex: 1 1 260px; min-width: 0; overflow: hidden; flex-wrap: nowrap; gap: 6px; }
+  .panel-topbar .info-bar > * { flex-shrink: 0; white-space: nowrap; }
+  .panel-topbar .info-bar .info-fecha { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .symbol-input, .timeframe-select { padding: 4px 8px; font-size: 12.5px; }
+  .symbol-input { width: 112px; padding-right: 22px; }
+  .btn-cargar { padding: 5px 13px; font-size: 12.5px; }
+  .btn-toggle-info { margin-left: 0; padding: 4px 8px; }
+
+  /* Botón Filtros (abre/cierra la fila de indicadores) */
+  .btn-filtros {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: #1e222d; border: 1px solid #363c4e; border-radius: 6px;
+    color: #d1d4dc; font-size: 12px; padding: 4px 9px; cursor: pointer;
+    transition: border-color .15s;
+  }
+  .btn-filtros:hover { border-color: #2962ff; }
+  .btn-filtros .chev { transition: transform .15s; }
+  .btn-filtros[aria-expanded="false"] .chev { transform: rotate(180deg); }
+  .filtros-count {
+    background: #2962ff; color: #fff; border-radius: 9px;
+    font-size: 10px; font-weight: 600; padding: 0 6px; min-width: 16px; text-align: center;
+  }
+  .filtros-count:empty { display: none; }
+
+  /* Fila 2: indicadores (colapsable) · Fila 3: señales + leyenda (finas) */
+  .signal-bar { padding: 3px 10px; gap: 4px 10px; font-size: 10.5px; }
+  .channel-toggles {
+    order: -1; flex: 1 1 100%; margin-left: 0; padding: 2px 0 5px;
+    border-left: 0; border-bottom: 1px solid #2a2e39;
+    flex-wrap: wrap; gap: 4px 8px;
+  }
+  .panel.filtros-cerrados .channel-toggles { display: none; }
+  .channel-toggles label {
+    padding: 2px 8px; border: 1px solid #2a2e39; border-radius: 12px;
+    background: #171b26; color: #a3a8b5; font-size: 11px; gap: 5px;
+    transition: all .12s;
+  }
+  .channel-toggles label:hover { border-color: #363c4e; color: #d1d4dc; }
+  .channel-toggles label:has(input:checked) {
+    border-color: rgba(41, 98, 255, .6); background: rgba(41, 98, 255, .12); color: #e6e9f2;
+  }
+  .channel-toggles input[type="checkbox"] { width: 11px; height: 11px; }
+  .sig-text-group { gap: 4px 10px; }
+  .channel-legend { margin-left: auto; padding-left: 0; border-left: 0; }
+  .panel.filtros-cerrados.info-oculta .signal-bar { display: none; }
+
+  /* Con 1 pantalla, Divisa · Timeframe · Cargar · Filtros suben a la barra global
+     (ocupan el hueco libre de la derecha); con 2 pantallas vuelven a cada panel. */
+  #slot-controles { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; }
+  #slot-controles:empty { display: none; }
+  #slot-controles .panel-topbar {
+    flex: 1 1 auto; min-width: 0; background: transparent; border-bottom: 0; padding: 0;
+  }
+  #slot-controles .panel-topbar .info-bar { flex: 1 1 200px; }
+
+  /* Con 2 pantallas: menos texto y tableros flotantes más angostos */
+  #panels-row.split .panel-topbar label { display: none; }
+  #panels-row.split .srf-board { width: 340px; left: 48px; }
+  #panels-row.split .posicion-board { min-width: 220px; max-width: 260px; }
+  #panels-row.split .seq-panel { width: 205px; right: 70px; }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -717,6 +810,8 @@
   </div>
   <button id="btn-split">⊞ 2 pantallas</button>
   <a id="btn-multitf" href="#" target="_blank" rel="noopener" title="Abre en una pestaña nueva: tablero S-P-N para varias divisas y temporalidades a la vez">📊 Multi-temporalidad</a>
+  <button id="btn-enfoque" type="button" title="Mostrar/ocultar la barra de navegación (Tablero, Gráfico, usuario, Salir)">⌂</button>
+  <div id="slot-controles"></div>
   <div id="server-status">
     <div id="server-dot"></div>
     <span id="server-label">Verificando servidor…</span>
@@ -786,6 +881,12 @@
 
     <button class="btn-cargar">▶ Cargar</button>
     <div class="spinner"></div>
+
+    <button type="button" class="btn-filtros" aria-expanded="true" title="Mostrar/ocultar los indicadores y filtros de este gráfico">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+      <span>Filtros</span><span class="filtros-count"></span>
+      <svg class="chev" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
+    </button>
 
     <div class="info-bar">
       <span class="info-symbol"></span>
@@ -1034,12 +1135,14 @@ function crearPanel(rootEl, opciones = {}) {
       c.closest("label") && c.closest("label").style.display !== "none");
   }
 
+  const elBadgeFiltros = $(".filtros-count");   // referencia fija: el panel 1 cambia de lugar en el DOM
   function actualizarBtnTodos() {
     const lista = indicadoresDeLaBarra();
     const activos = lista.filter(c => c.checked).length;
     const apagar = activos > 0;
     btnTodos.textContent = apagar ? "Apagar todo" : "Encender todo";
     btnTodos.classList.toggle("apagar", apagar);
+    if (elBadgeFiltros) elBadgeFiltros.textContent = activos ? String(activos) : "";
     btnTodos.title = apagar
       ? `Apaga de una vez los ${activos} indicadores encendidos (Pivot auto no se toca)`
       : `Enciende los ${lista.length} indicadores de la barra (Pivot auto no se toca)`;
@@ -1062,6 +1165,26 @@ function crearPanel(rootEl, opciones = {}) {
   // o por el botón) refresca la etiqueta, sin engancharlo uno por uno.
   togglesBar.addEventListener("change", actualizarBtnTodos);
   actualizarBtnTodos();
+
+  // ── Botón "Filtros": abre/cierra la fila de indicadores de TODOS los
+  // paneles a la vez, y recuerda cómo la dejaste. Cerrada, el gráfico gana
+  // esa altura (el ResizeObserver de cada panel re-encuadra solo).
+  const btnFiltros = $(".btn-filtros");
+  function aplicarEstadoFiltros(cerrados) {
+    document.querySelectorAll(".panel").forEach(p => {
+      p.classList.toggle("filtros-cerrados", cerrados);
+      const b = p.querySelector(".btn-filtros");
+      if (b) b.setAttribute("aria-expanded", String(!cerrados));
+    });
+    rootEl.classList.toggle("filtros-cerrados", cerrados);
+    if (btnFiltros) btnFiltros.setAttribute("aria-expanded", String(!cerrados));
+  }
+  aplicarEstadoFiltros(leerLS("filtros_cerrados", false));
+  if (btnFiltros) btnFiltros.addEventListener("click", () => {
+    const cerrar = !rootEl.classList.contains("filtros-cerrados");
+    guardarLS("filtros_cerrados", cerrar);
+    aplicarEstadoFiltros(cerrar);
+  });
   let srfTablaMin = leerLS("srf_tabla_min", false);
   let srfGuiaVisible = leerLS("srf_tabla_guia", false);
 
@@ -2867,6 +2990,26 @@ function crearPanel(rootEl, opciones = {}) {
     return 2;
   }
 
+  // ── Vista (zoom/paneo horizontal) ──
+  // Se captura relativa a la ÚLTIMA vela (no con índices absolutos) para que
+  // sobreviva a cambios en el tamaño de la ventana de velas, y se lee justo
+  // antes de dibujar (no antes del fetch), así no se pisa lo que el usuario
+  // hizo con el mouse mientras el servidor respondía.
+  function capturarVista() {
+    const rango = chart.timeScale().getVisibleLogicalRange();
+    if (!rango || !loadedCandles.length) return null;
+    const ultimo = loadedCandles.length - 1;
+    return { desdeUltima: rango.from - ultimo, hastaUltima: rango.to - ultimo };
+  }
+
+  function restaurarVista(vista, nVelas) {
+    const ultimo = nVelas - 1;
+    chart.timeScale().setVisibleLogicalRange({
+      from: ultimo + vista.desdeUltima,
+      to:   ultimo + vista.hastaUltima,
+    });
+  }
+
   function renderizarTodo(data, opciones = {}) {
     // mantenerVista: true cuando el símbolo/timeframe no cambiaron respecto
     // a la carga anterior (ej. el reproductor de replay avanzando un paso,
@@ -2877,7 +3020,11 @@ function crearPanel(rootEl, opciones = {}) {
     // de hacer fitContent(). Si cambió la divisa o el timeframe, sigue
     // haciendo fitContent() como siempre, porque ahí sí es un gráfico
     // distinto y no hay nada previo que tenga sentido preservar.
-    const { mantenerVista = false, rangoVisiblePrevio = null } = opciones;
+    const { mantenerVista = false } = opciones;
+
+    // Se lee la vista AHORA (justo antes de reemplazar los datos), no antes
+    // del fetch: si el usuario hizo zoom/paneo mientras cargaba, se respeta.
+    const vista = mantenerVista ? capturarVista() : null;
 
     emptyScreen.style.display = "none";
 
@@ -2948,16 +3095,10 @@ function crearPanel(rootEl, opciones = {}) {
     // alerta (ya ocurrió). Solo se avisa de lo que pase a partir de acá.
     revisarAlertasSEQ(true);
 
-    if (mantenerVista && rangoVisiblePrevio) {
-      // Mismo gráfico de antes (replay / solo cambió la fecha): se
-      // restaura el mismo rango LÓGICO (por índice de barra, no por
-      // tiempo) que el usuario ya tenía armado. Se usa lógico y no por
-      // tiempo porque el backend trae una ventana deslizante de velas
-      // (al avanzar el "hasta" se descartan las más viejas y entran
-      // nuevas al final) — el rango por tiempo puede no calzar con el
-      // nuevo set de datos, pero el rango lógico sí, porque el tamaño
-      // de la ventana se mantiene constante.
-      chart.timeScale().setVisibleLogicalRange(rangoVisiblePrevio);
+    if (vista) {
+      // Mismo gráfico de antes (replay / vela nueva / solo cambió la fecha):
+      // se restaura el mismo encuadre relativo a la última vela.
+      restaurarVista(vista, data.candles.length);
     } else {
       // Gráfico realmente nuevo (cambió divisa o timeframe): recién ahí
       // tiene sentido encuadrar todo el historial desde cero.
@@ -3059,7 +3200,6 @@ function crearPanel(rootEl, opciones = {}) {
     // traer las velas nuevas — así el gráfico no "salta" a fitContent()
     // cada vez y el usuario no tiene que reacomodarlo a cada rato.
     const mantenerVista = symbol === symbolActual && timeframe === timeframeActual;
-    const rangoVisiblePrevio = mantenerVista ? chart.timeScale().getVisibleLogicalRange() : null;
 
     cargandoDatos = true;
     spinner.style.display = "block";
@@ -3088,7 +3228,7 @@ function crearPanel(rootEl, opciones = {}) {
       console.log("[grafico] velas recibidas:", data.symbol, data.timeframe,
         data.first_date, "→", data.last_date, `(${data.n_candles_total} velas, hasta pedido: ${hasta || "(vacío = en vivo)"})`);
 
-      renderizarTodo(data, { mantenerVista, rangoVisiblePrevio });
+      renderizarTodo(data, { mantenerVista });
       symbolActual = symbol;
       timeframeActual = timeframe;
       setEstado("✓ Cargado", "ok");
@@ -3193,7 +3333,7 @@ function crearPanel(rootEl, opciones = {}) {
       grid:    { vertLines:{color:"#1e222d"}, horzLines:{color:"#1e222d"} },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
       rightPriceScale: { borderColor:"#2a2e39" },
-      timeScale: { borderColor:"#2a2e39", timeVisible:true, secondsVisible:false, rightOffset: 45 },
+      timeScale: { borderColor:"#2a2e39", timeVisible:true, secondsVisible:false, rightOffset: 45, shiftVisibleRangeOnNewBar: false },
     });
 
     candleSerie = chart.addCandlestickSeries({
@@ -3481,6 +3621,7 @@ function crearPanel(rootEl, opciones = {}) {
     // Pivot auto NO se ocultan — quedan siempre visibles.
     // Arranca COLAPSADA por defecto (más espacio para el gráfico de entrada).
     let infoColapsada = true;
+    rootEl.classList.add("info-oculta");
     infoBar.style.display = "none";
     sigTextGroup.style.display = "none";
     channelLegend.style.display = "none";
@@ -3489,6 +3630,7 @@ function crearPanel(rootEl, opciones = {}) {
 
     btnToggleInfo.addEventListener("click", () => {
       infoColapsada = !infoColapsada;
+      rootEl.classList.toggle("info-oculta", infoColapsada);
       infoBar.style.display = infoColapsada ? "none" : "flex";
       sigTextGroup.style.display = infoColapsada ? "none" : "flex";
       channelLegend.style.display = infoColapsada ? "none" : "flex";
@@ -3887,6 +4029,7 @@ window.addEventListener("load", () => {
 
   panel1 = crearPanel(document.getElementById("panel-1"));
   panel1.init();
+  ubicarControlesPanel1();
 
   if (atajoSymbol) panel1.setSymbol(atajoSymbol.toUpperCase());
   if (atajoTimeframe) panel1.setTimeframe(atajoTimeframe);
@@ -3933,8 +4076,24 @@ window.addEventListener("load", () => {
   setInterval(verificarServidor, 5000);
 });
 
+// Con 1 pantalla la fila Divisa/Timeframe/Cargar/Filtros del panel 1 vive en la
+// barra global (hueco libre a la derecha); con 2 pantallas vuelve a su panel.
+function ubicarControlesPanel1() {
+  const slot = document.getElementById("slot-controles");
+  const panelEl = document.getElementById("panel-1");
+  const tb = panelEl.querySelector(":scope > .panel-topbar") || slot.querySelector(".panel-topbar");
+  if (!tb) return;
+  if (modoSplit) {
+    if (tb.parentElement !== panelEl) panelEl.insertBefore(tb, panelEl.firstChild);
+  } else if (tb.parentElement !== slot) {
+    slot.appendChild(tb);
+  }
+}
+
 function toggleSplit() {
   modoSplit = !modoSplit;
+  ubicarControlesPanel1();
+  document.getElementById("panels-row").classList.toggle("split", modoSplit);
   const panel2El = document.getElementById("panel-2");
   const btn = document.getElementById("btn-split");
 
@@ -4023,5 +4182,15 @@ async function verificarServidor() {
     label.textContent = "Servidor offline — ejecuta arrancar.bat";
   }
 }
+</script>
+<script>
+// La barra de navegación de arriba está oculta por defecto (más espacio para
+// el gráfico). El botón "⌂" la muestra u oculta cuando necesites ir al
+// Tablero o salir.
+(function () {
+  const btn = document.getElementById("btn-enfoque");
+  if (!btn) return;
+  btn.addEventListener("click", () => document.body.classList.toggle("menu-abierto"));
+})();
 </script>
 {% endblock %}
