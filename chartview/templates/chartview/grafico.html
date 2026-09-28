@@ -889,13 +889,9 @@
     </button>
 
     <div class="info-bar">
-      <span class="info-symbol"></span>
-      <span class="info-fecha"></span>
       <button class="btn-cargar-mas" style="display:none">← Cargar más historial</button>
       <span class="estado"></span>
     </div>
-
-    <button class="btn-toggle-info" title="Mostrar/ocultar información">☰</button>
   </div>
 
   <div class="signal-bar">
@@ -1044,8 +1040,6 @@ function crearPanel(rootEl, opciones = {}) {
   const timeframeSelect  = $(".timeframe-select");
   const btnCargar        = $(".btn-cargar");
   const spinner          = $(".spinner");
-  const infoSymbol       = $(".info-symbol");
-  const infoFecha        = $(".info-fecha");
   const btnCargarMas     = $(".btn-cargar-mas");
   const estadoEl         = $(".estado");
   const sigSignal        = $(".sig-signal");
@@ -1079,8 +1073,7 @@ function crearPanel(rootEl, opciones = {}) {
   const btnClearDrawings = rootEl.querySelector(".draw-tool[data-action='clear']");
   const smfContainer     = $(".smf-container");
   const channelLegend    = $(".channel-legend");
-  const btnToggleInfo    = $(".btn-toggle-info");
-  const infoBar          = $(".info-bar");
+
   const sigTextGroup     = $(".sig-text-group");
 
   // Datalist necesita un id único por panel para poder referenciarlo con "list="
@@ -3073,11 +3066,6 @@ function crearPanel(rootEl, opciones = {}) {
     btnCargarMas.disabled = false;
     btnCargarMas.textContent = "← Cargar más historial";
 
-    infoSymbol.textContent = data.symbol;
-    infoFecha.textContent =
-      `· ${data.timeframe} · ${data.first_date} → ${data.last_date} · ${data.n_candles_total} velas (${data.source})` +
-      (data.auto_pivot ? " · pivot auto" : "");
-
     dibujarCanales();
 
     currentKalman = data.kalman || null;
@@ -3615,28 +3603,13 @@ function crearPanel(rootEl, opciones = {}) {
       guardarPreferencia("tablero_canales", e.target.checked);
     });
 
-    // Colapsar/expandir la info (señal/kalman/canales + fecha/estado del
-    // panel + leyenda de colores de canales) para liberar espacio vertical
-    // del gráfico. Los checkboxes de Largo/Mediano/Corto/Relleno/Kalman/
-    // Pivot auto NO se ocultan — quedan siempre visibles.
-    // Arranca COLAPSADA por defecto (más espacio para el gráfico de entrada).
-    let infoColapsada = true;
+    // La fila de señal/kalman/canales y la leyenda de colores ya no se
+    // muestran (antes las mostraba/ocultaba el botón ☰, que se quitó).
+    // Los checkboxes de Largo/Mediano/Corto/Relleno/Kalman/Pivot auto NO
+    // se ven afectados — siguen siempre visibles.
     rootEl.classList.add("info-oculta");
-    infoBar.style.display = "none";
     sigTextGroup.style.display = "none";
     channelLegend.style.display = "none";
-    btnToggleInfo.textContent = "▾";
-    btnToggleInfo.title = "Mostrar información";
-
-    btnToggleInfo.addEventListener("click", () => {
-      infoColapsada = !infoColapsada;
-      rootEl.classList.toggle("info-oculta", infoColapsada);
-      infoBar.style.display = infoColapsada ? "none" : "flex";
-      sigTextGroup.style.display = infoColapsada ? "none" : "flex";
-      channelLegend.style.display = infoColapsada ? "none" : "flex";
-      btnToggleInfo.textContent = infoColapsada ? "▾" : "☰";
-      btnToggleInfo.title = infoColapsada ? "Mostrar información" : "Ocultar información";
-    });
 
     resizeOverlayCanvas();
     precargarDefaults();
