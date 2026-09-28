@@ -192,6 +192,27 @@
   .canal-inner { display: flex; flex-direction: column; align-items: center; gap: 4px; }
   .canal-sub { font-size: 10.5px; color: #848e9c; font-variant-numeric: tabular-nums; }
   .canal-senal { font-size: 10px; font-weight: 700; letter-spacing: .02em; }
+
+  /* ── Escala visual de fuerza del USD (-100 a 100) ──
+     Barra con degradado débil→neutro→fuerte, marcador en la posición
+     actual, y rayitas de referencia en ±20 y ±60 (los mismos cortes que
+     usa clasificarFuerza: Débil/Neutro/Fuerte/Muy fuerte). */
+  .escala-fuerza { display: flex; align-items: center; gap: 8px; }
+  .escala-fuerza-track {
+    width: 90px; height: 6px; border-radius: 3px; position: relative;
+    background: linear-gradient(to right, #e5484d, #848e9c, #00c896);
+    flex-shrink: 0;
+  }
+  .escala-fuerza-marca {
+    position: absolute; top: -2px; width: 1px; height: 10px;
+    background: rgba(255,255,255,.35);
+  }
+  .escala-fuerza-marcador {
+    position: absolute; top: -3px; width: 2px; height: 12px;
+    background: #fff; border-radius: 1px; transform: translateX(-1px);
+    box-shadow: 0 0 2px rgba(0,0,0,.6);
+  }
+  .escala-fuerza-texto { font-size: 12.5px; white-space: nowrap; }
 </style>
 {% endblock %}
 
@@ -245,6 +266,8 @@
     <span class="leyenda-item"><span class="icono-estado soporte">↑</span> Soporte</span>
     <span class="leyenda-item"><span class="icono-estado neutro"></span> Neutro</span>
     <span class="leyenda-item" style="color:#848e9c">· Columna <b style="color:#c7cbd1">KN</b>: última señal de compra/venta (indicador KN Smart TP SL)</span>
+    <span id="fuerza-usd" class="leyenda-item" style="margin-left:auto"></span>
+    <span id="veredicto-tf" class="leyenda-item"></span>
   </div>
   <div id="tarjetas-wrap" class="tarjetas-grid" style="display:none"></div>
   <div id="vacio" style="display:none">Todavía no hay datos calculados para tu selección — Celery los arma cada 5 minutos (o guardá la selección para forzar el primer cálculo ya).</div>
@@ -541,6 +564,441 @@ function tarjetaCuerpoHtml(res) {
 // confirmada pesa más que potencial, y potencial pesa más que rebote
 // (una ruptura ya confirmada por el precio es más urgente de mirar que
 // una que el KN solo está anticipando).
+// ══════════════════════════════════════════════════════════
+// Medidor de fuerza del USD (-100 a +100), calculado 100% en el
+// cliente a partir de las mismas señales que ya trae data.resultados
+// (sin tocar el backend — ver /api_snapshot). Combina, por cada par
+// USD × timeframe, el estado de los 4 canales S-P-N y la señal KN,
+// ponderados por tipo de señal, canal, cercanía al borde y
+// temporalidad.
+//
+// Notas de implementación (repo revisado completo antes de escribir
+// esto, no solo los 6 archivos de la spec original):
+//
+// - "quality" (containment ratio del canal, ver auto_channels.py y
+//   ChannelSPN en channel_breakout_status.py) SE CALCULA internamente
+//   en cada canal, pero compute_tf_row() en core/engine/analysis.py
+//   NO lo copia al diccionario que arma cada celda — nunca llega a
+//   data.resultados. No se puede usar como multiplicador de calidad
+//   (punto 1 de la nota) sin antes agregar "quality" a esa celda en
+//   el backend. Si en algún momento se agrega, el lugar natural es
+//   multiplicar cada `score` de canal por (0.5 + c.quality/2).
+// - Kalman (KALMAN_ENABLED=True en trading_defaults.py) NO se calcula
+//   en compute_tf_row — esa función solo corre canales + KN. No hay
+//   dirección de Kalman en el snapshot del tablero para sumar como
+//   indicador extra (punto 5 de la nota).
+// - Smart Money Flow sigue apagado (SMART_MONEY_FLOW_ENABLED=False),
+//   tal como asumía la spec — no hay nada que sumar de ahí todavía.
+//
+// Los pesos PESO_TIPO/PESO_CANAL son estimaciones razonables, no
+// calibradas con histórico real de aciertos — ajustar si en algún
+// momento se junta esa evidencia (puntos 3 y 4 de la nota).
+//
+// Bonus/castigo de consistencia (agregado después): sin esto, un solo
+// par con señales fuertes podía mover el número tanto como si los 8
+// pares estuvieran de acuerdo — un outlier disfrazado de tendencia. Se
+// mide qué fracción de los pares con señal activa apunta en la misma
+// dirección que el resultado global, y se escala el puntaje final
+// entre ×0.6 (mitad y mitad / arrastrado por 1 outlier) y ×1.2
+// (consenso real entre todos los pares). Ver factorConsistencia más
+// abajo.
+//
+// Peso por temporalidad — RELATIVO, no una tabla fija (agregado
+// después): qué timeframes aparecen en data.resultados depende 100% de
+// qué TemporalidadSeguida tenga tildada el usuario (ver models.py) —
+// puede ser cualquier subconjunto de las 14 TFs de MINUTOS_TF, incluso
+// una sola. Por eso el peso de cada TF ya no es una tabla fija
+// (D1=3/H4=2/H1=1): se calcula en log-escala relativo a la TF de mayor
+// rango que esté REALMENTE presente en esta corrida puntual — ver
+// calcularPesoRelativoTF(). Ojo: con esta fórmula, si M1 está presente
+// junto con cualquier TF más larga, M1 pesa exactamente 0
+// (log(1)=0) — no aporta nada al puntaje, solo "existe" en el
+// desglose. Es una consecuencia matemática de usar log-escala con M1
+// como piso, no un bug.
+// ══════════════════════════════════════════════════════════
+const USD_BASE = new Set(["USDCAD", "USDCHF", "USDJPY"]);
+const USD_QUOTE = new Set(["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "XAUUSD"]);
+const PESO_TIPO_SENAL = { rotura: 1.0, rebote: 0.7, rotura_potencial: 0.5 };
+const PESO_CANAL = { canal_largo: 1.0, canal_corto: 0.8, canal_largo_inverso: 0.7, canal_corto_inverso: 0.6 };
+const PESO_KN_ESTADO = { sl: 0.0, activa: 0.4, tp1: 0.7, tp2: 0.9, tp3: 1.0 };
+const SPN_NEAR_THRESHOLD_PCT = 30.0;   // mismo valor que trading_defaults.py (SPN_NEAR_THRESHOLD_PCT)
+const PESO_KN_INDICADOR = 1.3;
+// "Score máximo posible" de UNA fila si su peso de TF fuera 1 — se
+// multiplica por pesoRelativoTF[tf] para tener el máximo real de esa
+// TF puntual. Compartido entre calcularFuerzaUSD y calcularFuerzaPorTF
+// para que ambas normalicen exactamente igual.
+const UNIDAD_MAX_POR_TF = PESO_KN_INDICADOR + Object.values(PESO_CANAL).reduce((a, b) => a + b, 0);
+
+// Duración en minutos de las 14 temporalidades que puede tildar un
+// usuario (ver TemporalidadSeguida en models.py) — se usa para ordenar
+// jerárquicamente cualquier subconjunto que esté realmente presente.
+const MINUTOS_TF = {
+  M1: 1, M5: 5, M15: 15, M30: 30, H1: 60, H2: 120, H3: 180, H4: 240,
+  H6: 360, H8: 480, H12: 720, D1: 1440, W1: 10080, MN1: 43200,
+};
+
+function factorProximidad(distanciaPct) {
+  if (distanciaPct === null || distanciaPct === undefined) return 0;
+  const f = 1 - Math.abs(distanciaPct) / SPN_NEAR_THRESHOLD_PCT;
+  return Math.max(0, Math.min(1, f));
+}
+
+// Peso de cada TF PRESENTE, relativo a la de mayor rango del conjunto
+// — nunca una tabla fija, porque el conjunto de TFs cambia según lo
+// que el usuario tenga tildado. Log-escala: duplicar la duración de la
+// vela no duplica el peso (H4 no pesa "el doble" que H2), como una
+// tendencia de D1 tampoco es "96 veces" más importante que una de M15
+// solo por la relación de minutos.
+function calcularPesoRelativoTF(timeframesPresentes) {
+  const validas = timeframesPresentes.filter(tf => {
+    if (!(tf in MINUTOS_TF)) {
+      console.warn(`[fuerza-usd] timeframe no reconocida, se ignora: ${tf}`);
+      return false;
+    }
+    return true;
+  });
+  if (validas.length === 0) return {};
+
+  const maxMinutos = Math.max(...validas.map(tf => MINUTOS_TF[tf]));
+  const pesos = {};
+  validas.forEach(tf => {
+    pesos[tf] = maxMinutos === 1 ? 1 : Math.log(MINUTOS_TF[tf]) / Math.log(maxMinutos);
+  });
+  return pesos;
+}
+
+// Le asigna a cada TF presente un ROL relativo a las demás — nunca
+// nombres de TF fijos como "D1"/"H1": con W1+MN1 nada más, W1 es el
+// "corto_plazo" aunque en términos absolutos sea larga. Los roles son
+// siempre relativos al conjunto que está activo ahora mismo.
+function asignarRoles(timeframesPresentes, pesoRelativoTF) {
+  const ordenadas = [...new Set(timeframesPresentes)]
+    .filter(tf => tf in pesoRelativoTF)
+    .sort((a, b) => MINUTOS_TF[b] - MINUTOS_TF[a]);   // mayor rango primero
+
+  if (ordenadas.length === 0) return {};
+  if (ordenadas.length === 1) return { unica: ordenadas[0] };
+  if (ordenadas.length === 2) {
+    return { estructura: ordenadas[0], intermedias: [], corto_plazo: ordenadas[1] };
+  }
+  return {
+    estructura: ordenadas[0],
+    intermedias: ordenadas.slice(1, -1),
+    corto_plazo: ordenadas[ordenadas.length - 1],
+  };
+}
+
+// Score normalizado (-100 a 100) por CADA temporalidad presente en el
+// desglose, por separado — es lo que compara generarVeredicto() entre
+// planos (estructura vs intermedio vs corto plazo).
+function calcularFuerzaPorTF(desglose, pesoRelativoTF) {
+  const timeframesPresentes = [...new Set(desglose.map(d => d.timeframe))];
+  const resultado = {};
+  timeframesPresentes.forEach(tf => {
+    const entradas = desglose.filter(d => d.timeframe === tf);
+    const sumaContribTf = entradas.reduce((acc, d) => acc + d.contrib, 0);
+    const pesoTf = pesoRelativoTF[tf] ?? 0;
+    const sumaMaxTf = entradas.length * pesoTf * UNIDAD_MAX_POR_TF;
+    resultado[tf] = sumaMaxTf > 0
+      ? Math.max(-100, Math.min(100, (sumaContribTf / sumaMaxTf) * 100))
+      : 0;
+  });
+  return resultado;
+}
+
+// No depende de cuántas TFs haya activas — mismos 3 escalones sea cual
+// sea el conjunto.
+//
+// Umbral de "fuerte" calibrado por simulación (no es el 40 original de
+// la spec): con la canasta de 8 pares USD de este tablero y una señal
+// "típica" fuerte por par (canal_largo con rotura + KN en tp3, ambos
+// alineados = ~2.3 de contrib c/u sobre un máximo de 4.4), exigir >40
+// significaba necesitar 7 u 8 de los 8 pares alineados para calificar
+// como "fuerte" — prácticamente unanimidad, algo raro en la práctica
+// real. Con >35, una mayoría clara (6/8, 75% de la canasta) ya alcanza
+// — sigue siendo un umbral exigente, pero no unanimidad. moderado/debil
+// quedan igual que en la spec original (>=15 / <15).
+function clasificarMagnitud(score) {
+  const abs = Math.abs(score);
+  if (abs > 35) return "fuerte";
+  if (abs >= 15) return "moderado";
+  return "debil";
+}
+
+// Veredicto DESCRIPTIVO (no prescriptivo, igual que el resto del
+// indicador) de cómo se relacionan los distintos planos temporales que
+// el usuario tiene activos ahora mismo. Siempre nombra las TFs
+// puntuales que está comparando (nunca "corto plazo" a secas) porque,
+// como el conjunto cambia según el usuario, un texto genérico daría la
+// falsa impresión de una conclusión con datos que no tiene.
+function generarVeredicto(fuerzaPorTF, roles, pesoRelativoTF) {
+  if (!roles || !roles.estructura || !roles.corto_plazo) return null;   // 0 ó 1 TF presente: no hay nada que comparar
+
+  const signo = n => (n > 0 ? 1 : (n < 0 ? -1 : 0));
+  const intermedias = roles.intermedias || [];
+
+  const scoreEstructura = fuerzaPorTF[roles.estructura];
+  const scoreCortoPlazo = fuerzaPorTF[roles.corto_plazo];
+
+  let scoreIntermedio = null;
+  if (intermedias.length > 0) {
+    let sumaPonderada = 0, sumaPesos = 0;
+    intermedias.forEach(tf => {
+      const peso = pesoRelativoTF[tf] ?? 0;
+      sumaPonderada += fuerzaPorTF[tf] * peso;
+      sumaPesos += peso;
+    });
+    scoreIntermedio = sumaPesos > 0 ? sumaPonderada / sumaPesos : null;
+  }
+
+  const magEstructura = clasificarMagnitud(scoreEstructura);
+  const magIntermedio = scoreIntermedio !== null ? clasificarMagnitud(scoreIntermedio) : null;
+  const etiquetaIntermedio = intermedias.length > 0 ? intermedias.join("+") : null;
+  const listaTFs = [roles.estructura, ...intermedias, roles.corto_plazo].join(", ");
+
+  // a) Conflicto entre los planos de mayor rango
+  if (scoreIntermedio !== null
+      && signo(scoreEstructura) !== signo(scoreIntermedio)
+      && magEstructura !== "debil" && magIntermedio !== "debil") {
+    return {
+      tipo: "conflicto",
+      texto: `Sin consenso entre los plazos de mayor rango (${roles.estructura} vs ${etiquetaIntermedio}) — señal de baja confianza.`,
+      scoreEstructura, scoreCortoPlazo,
+    };
+  }
+
+  // b) Posible pullback: fondo fuerte y alineado, pero el corto plazo va al revés
+  if ((scoreIntermedio === null || signo(scoreEstructura) === signo(scoreIntermedio))
+      && magEstructura === "fuerte"
+      && signo(scoreCortoPlazo) !== signo(scoreEstructura)) {
+    const conIntermedio = etiquetaIntermedio ? `con ${etiquetaIntermedio}` : "sin plazo intermedio en tu selección";
+    return {
+      tipo: "pullback",
+      texto: `Tendencia de fondo fuerte en ${roles.estructura} (${conIntermedio}), con retroceso de corto plazo en ${roles.corto_plazo} — probable pullback, no reversión.`,
+      scoreEstructura, scoreCortoPlazo,
+    };
+  }
+
+  // c) Tendencia confirmada en todos los planos
+  const signoRef = scoreIntermedio !== null ? signo(scoreIntermedio) : signo(scoreEstructura);
+  if (signo(scoreEstructura) === signo(scoreCortoPlazo) && signo(scoreEstructura) === signoRef
+      && magEstructura !== "debil") {
+    return {
+      tipo: "confirmada",
+      texto: `Tendencia alineada en todos los plazos que estás siguiendo (${listaTFs}) — continuación probable.`,
+      scoreEstructura, scoreCortoPlazo,
+    };
+  }
+
+  // d) Fondo presente pero todavía sin confirmar en el plazo intermedio
+  if (scoreIntermedio !== null
+      && signo(scoreEstructura) === signo(scoreIntermedio)
+      && magIntermedio === "debil") {
+    return {
+      tipo: "sin_confirmar",
+      texto: `Tendencia de fondo en ${roles.estructura} sin confirmar todavía en el plazo intermedio (${intermedias.join(", ")}).`,
+      scoreEstructura, scoreCortoPlazo,
+    };
+  }
+
+  // e) Nada de lo anterior — señales mixtas sin patrón claro
+  return {
+    tipo: "mixto",
+    texto: `Señales mixtas entre ${listaTFs}, sin patrón claro.`,
+    scoreEstructura, scoreCortoPlazo,
+  };
+}
+
+function calcularFuerzaUSD(resultados) {
+  // Qué TFs están REALMENTE presentes en esta corrida puntual — nunca
+  // un set fijo, depende de qué TemporalidadSeguida tenga tildada el
+  // usuario. A partir de esto se deriva el peso relativo de cada una.
+  const timeframesPresentes = [...new Set(
+    resultados.flatMap(res => (res.filas || []).map(f => f.timeframe))
+  )];
+  const pesoRelativoTF = calcularPesoRelativoTF(timeframesPresentes);
+
+  let sumaContrib = 0, sumaMax = 0;
+  const desglose = [];
+  const contribPorSimbolo = {};   // symbol -> suma de sus contribuciones (todas sus filas), para el bonus de consistencia
+
+  resultados.forEach(res => {
+    if (res.error) return;
+    let signo = 0;
+    if (USD_BASE.has(res.symbol)) signo = 1;
+    else if (USD_QUOTE.has(res.symbol)) signo = -1;
+    else return;   // par sin USD (ej. cruces EURGBP) — no participa
+
+    (res.filas || []).forEach(fila => {
+      if (fila.error) return;
+      const pesoTF = pesoRelativoTF[fila.timeframe] ?? 0;
+      let scoreFila = 0;
+
+      ["canal_largo", "canal_largo_inverso", "canal_corto", "canal_corto_inverso"].forEach(clave => {
+        const c = fila[clave];
+        if (!c || !c.senal) return;
+        const direccion = c.senal.direccion === "alcista" ? 1 : -1;
+        scoreFila += direccion * PESO_TIPO_SENAL[c.senal.tipo] * PESO_CANAL[clave]
+                     * factorProximidad(c.distancia_pct) * pesoTF;
+      });
+
+      if (fila.kn) {
+        const direccionKn = fila.kn.dir === 1 ? 1 : -1;
+        scoreFila += direccionKn * (PESO_KN_ESTADO[fila.kn.estado] ?? 0) * pesoTF * PESO_KN_INDICADOR;
+      }
+
+      const contrib = signo * scoreFila;
+      sumaContrib += contrib;
+      sumaMax += pesoTF * UNIDAD_MAX_POR_TF;
+      desglose.push({ symbol: res.symbol, timeframe: fila.timeframe, contrib });
+      contribPorSimbolo[res.symbol] = (contribPorSimbolo[res.symbol] || 0) + contrib;
+    });
+  });
+
+  // ── Bonus/castigo de consistencia entre pares ──
+  // Sin esto, un solo par con señales fuertes puede arrastrar el
+  // resultado igual que si los 8 pares estuvieran de acuerdo — un
+  // outlier disfrazado de tendencia. Se mide qué fracción de los pares
+  // con señal (contribPorSimbolo != 0) apunta en la MISMA dirección que
+  // el resultado global (sumaContrib):
+  //   - Consenso real (todos de acuerdo)      -> factor hasta 1.2 (+20%)
+  //   - Mitad y mitad                          -> factor 0.6 (-40%)
+  //   - Resultado arrastrado por 1 de varios    -> factor cerca de 0.6
+  // Con 0 o 1 par con señal no hay "consistencia" que medir entre pares
+  // -> factor neutro (1.0), no se premia ni se castiga.
+  const simbolosConSenal = Object.keys(contribPorSimbolo).filter(s => contribPorSimbolo[s] !== 0);
+  let factorConsistencia = 1.0, paresAFavor = 0;
+  if (simbolosConSenal.length >= 2 && sumaContrib !== 0) {
+    const direccionGlobal = Math.sign(sumaContrib);
+    paresAFavor = simbolosConSenal.filter(s => Math.sign(contribPorSimbolo[s]) === direccionGlobal).length;
+    const consistencia = paresAFavor / simbolosConSenal.length;   // 0 a 1
+    factorConsistencia = 0.6 + 0.6 * consistencia;                // 0.6 a 1.2
+  }
+
+  const fuerza = sumaMax > 0
+    ? Math.max(-100, Math.min(100, (sumaContrib / sumaMax) * factorConsistencia * 100))
+    : 0;
+  return {
+    fuerza, desglose,
+    consistencia: { pares: simbolosConSenal.length, paresAFavor, factor: factorConsistencia },
+  };
+}
+
+function clasificarFuerza(fuerza) {
+  if (fuerza > 60) return { etiqueta: "Muy fuerte", color: "#00a63e" };
+  if (fuerza > 20) return { etiqueta: "Fuerte", color: "#00c896" };
+  if (fuerza >= -20) return { etiqueta: "Neutro", color: "#848e9c" };
+  if (fuerza >= -60) return { etiqueta: "Débil", color: "#f7931a" };
+  return { etiqueta: "Muy débil", color: "#e5484d" };
+}
+
+const COLOR_VEREDICTO_TF = {
+  conflicto: "#e5484d", pullback: "#f7931a", confirmada: "#00c896",
+  sin_confirmar: "#848e9c", mixto: "#848e9c",
+};
+
+// Frase en lenguaje simple para el veredicto multi-temporalidad. Sin
+// jerga técnica (nada de "pullback"/"conflicto" a la vista) — el nombre
+// técnico y el detalle de qué TFs se compararon quedan en el tooltip
+// (veredicto.texto), para quien lo quiera revisar.
+//
+// "sube"/"baja" se decide con veredicto.scoreEstructura (la TF de mayor
+// rango, la que efectivamente determina "confirmada"/"pullback"/etc.),
+// NO con la fuerza global mezclada de calcularFuerzaUSD. Son cosas
+// distintas: la fuerza global promedia TODAS las TFs y TODOS los pares,
+// así que puede tener un signo distinto al de la tendencia de fondo
+// puntual que este veredicto está describiendo — usarla acá podía
+// generar frases contradictorias, del tipo "el dólar viene subiendo,
+// pero está retrocediendo" cuando la tendencia de fondo real (D1, por
+// ejemplo) era bajista y solo el promedio general daba positivo por
+// otros pares/TFs.
+function fraseVeredicto(veredicto) {
+  const sube = veredicto.scoreEstructura >= 0;
+  const verbo = sube ? "subiendo" : "bajando";
+  switch (veredicto.tipo) {
+    case "confirmada":
+      return `El dólar viene ${verbo} con fuerza en todos los plazos que seguís.`;
+    case "pullback":
+      return `El dólar viene ${verbo}, pero ahora mismo está retrocediendo un poco en el corto plazo.`;
+    case "conflicto":
+      return `Las señales de distintos plazos no se ponen de acuerdo — más cuidado ahora.`;
+    case "sin_confirmar":
+      return `El dólar empieza a moverse, pero todavía no se confirma en todos los plazos.`;
+    default:
+      return `No hay un patrón claro entre los plazos por ahora.`;
+  }
+}
+
+// Pinta (o limpia) el badge de veredicto multi-temporalidad, al lado
+// del de fuerza USD.
+function pintarVeredictoTF(veredicto) {
+  const el = document.getElementById("veredicto-tf");
+  if (!el) return;
+  if (!veredicto) {
+    el.innerHTML = "";
+    el.title = "";
+    return;
+  }
+  const color = COLOR_VEREDICTO_TF[veredicto.tipo] || "#848e9c";
+  el.innerHTML = `<span style="color:#848e9c">↳</span> <span style="color:${color}">${fraseVeredicto(veredicto)}</span>`;
+  // El tooltip conserva el texto técnico original (con los nombres
+  // exactos de TF comparados: "D1 vs H4", etc.) para quien quiera el detalle.
+  el.title = veredicto.texto;
+}
+
+// Rayitas de referencia en la escala, en los mismos cortes que usa
+// clasificarFuerza (±20 = borde Neutro/Débil-Fuerte, ±60 = borde
+// Fuerte/Muy fuerte). Se ubican en % de la barra: -100->0%, 100->100%.
+const MARCAS_ESCALA_FUERZA = [-60, -20, 20, 60].map(v => ((v + 100) / 2));
+
+// Pinta (o limpia) el span de la leyenda con el resultado de
+// calcularFuerzaUSD(), ahora como barra visual (no solo texto).
+// Separado de refrescarVista() para poder llamarlo también, por
+// ejemplo, apenas se limpia la vista.
+function actualizarFuerzaUSD(resultados) {
+  const el = document.getElementById("fuerza-usd");
+  const { fuerza, desglose, consistencia } = calcularFuerzaUSD(resultados || []);
+  if (desglose.length === 0) {
+    // Sin ningún par con USD en la selección actual: mejor vacío que
+    // un 0 engañoso (0 real = "USD neutro", no "no hay datos").
+    el.innerHTML = "";
+    el.title = "";
+    pintarVeredictoTF(null);
+    return;
+  }
+  const clasif = clasificarFuerza(fuerza);
+  const posicionPct = (fuerza + 100) / 2;   // -100 -> 0%, 0 -> 50%, 100 -> 100%
+  const marcasHtml = MARCAS_ESCALA_FUERZA
+    .map(pct => `<div class="escala-fuerza-marca" style="left:${pct}%"></div>`)
+    .join("");
+  el.innerHTML = `
+    <div class="escala-fuerza">
+      <div class="escala-fuerza-track">
+        ${marcasHtml}
+        <div class="escala-fuerza-marcador" style="left:${posicionPct}%"></div>
+      </div>
+      <div class="escala-fuerza-texto">
+        <b style="color:${clasif.color}">USD ${fuerza.toFixed(0)}</b>
+        <span style="color:#848e9c">· ${clasif.etiqueta}</span>
+      </div>
+    </div>`;
+  const lineaConsistencia = consistencia.pares >= 2
+    ? `Consistencia: ${consistencia.paresAFavor}/${consistencia.pares} pares a favor (×${consistencia.factor.toFixed(2)})\n\n`
+    : "";
+  el.title = lineaConsistencia + desglose
+    .filter(d => Math.abs(d.contrib) > 0.01)
+    .map(d => `${d.symbol} ${d.timeframe}: ${d.contrib.toFixed(2)}`)
+    .join("\n");
+
+  // ── Veredicto multi-temporalidad: se adapta a las TFs que estén
+  // realmente presentes en este desglose, nunca a un set fijo. ──
+  const timeframesPresentes = [...new Set(desglose.map(d => d.timeframe))];
+  const pesoRelativoTF = calcularPesoRelativoTF(timeframesPresentes);
+  const roles = asignarRoles(timeframesPresentes, pesoRelativoTF);
+  const fuerzaPorTF = calcularFuerzaPorTF(desglose, pesoRelativoTF);
+  pintarVeredictoTF(generarVeredicto(fuerzaPorTF, roles, pesoRelativoTF));
+}
+
 function prioridadDivisa(res) {
   if (res.error) return { score: -1, roturas: 0, roturasPotenciales: 0, rebotes: 0 };
   let roturas = 0, roturasPotenciales = 0, rebotes = 0;
@@ -577,8 +1035,11 @@ async function refrescarVista() {
       console.log("[refrescarVista] sin resultados todavia (tablero vacio)");
       tarjetasWrap.style.display = "none";
       vacio.style.display = "block";
+      actualizarFuerzaUSD([]);
       return;
     }
+
+    actualizarFuerzaUSD(data.resultados);
 
     // Reordenar: las divisas con Rotura confirmada / Rotura potencial /
     // Rebote activo en cualquiera de sus TF quedan primero (Rotura
