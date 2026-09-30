@@ -104,6 +104,15 @@
     }
     #btn-split:hover { border-color: #2962ff; color: #2962ff; }
 
+    #sync-controls { display: flex; align-items: center; gap: 4px; }
+    .sync-btn, #sync-modo {
+      background: transparent; border: 1px solid #363c4e; border-radius: 6px;
+      color: #848e9c; font-size: 12px; padding: 5px 10px; cursor: pointer;
+    }
+    #sync-modo { padding: 4px 6px; background: #1e222d; }
+    .sync-btn:hover { color: #d1d4dc; }
+    .sync-btn.activo { border-color: #2962ff; color: #2962ff; }
+
     #btn-multitf {
       background: transparent;
       border: 1px solid #363c4e;
@@ -809,6 +818,15 @@
     </div>
   </div>
   <button id="btn-split">⊞ 2 pantallas</button>
+  <div id="sync-controls" style="display:none">
+    <button type="button" id="sync-zoom" class="sync-btn activo" title="Zoom y desplazamiento: lo que hagas en un gráfico se replica en el otro">🔗 Zoom/Scroll</button>
+    <button type="button" id="sync-cross" class="sync-btn activo" title="Crosshair sincronizado entre las 2 pantallas">✛ Crosshair</button>
+    <select id="sync-modo" title="Cómo se alinean los gráficos: por fecha (sirve con distinta temporalidad) o por cantidad de velas desde la última">
+      <option value="fecha" selected>Por fecha</option>
+      <option value="barras">Por velas</option>
+    </select>
+    <button type="button" id="sync-alinear" class="sync-btn" title="Alinear la Pantalla 2 con la vista de la Pantalla 1 ahora mismo">⇥ Alinear</button>
+  </div>
   <a id="btn-multitf" href="#" target="_blank" rel="noopener" title="Abre en una pestaña nueva: tablero S-P-N para varias divisas y temporalidades a la vez">📊 Multi-temporalidad</a>
   <button id="btn-enfoque" type="button" title="Mostrar/ocultar la barra de navegación (Tablero, Gráfico, usuario, Salir)">⌂</button>
   <div id="slot-controles"></div>
@@ -3650,6 +3668,7 @@ function crearPanel(rootEl, opciones = {}) {
   return {
     init, cargarDatos, resize: resizeOverlayCanvas, symbolInput, setSymbol, setTimeframe,
     getChart: () => chart, getCandleSerie: () => candleSerie,
+    getChartEl: () => chartPlot, getCandles: () => loadedCandles,
     getTimeframe: () => timeframeSelect.value,
     getUltimaVela: () => lastRealTime,
     estaCargando: () => cargandoDatos,
@@ -4073,6 +4092,7 @@ function toggleSplit() {
   if (modoSplit) {
     panel2El.style.display = "flex";
     btn.textContent = "⊟ 1 pantalla";
+    document.getElementById("sync-controls").style.display = "flex";
     if (!panel2Inicializado) {
       panel2 = crearPanel(panel2El, {
         // Cada vez que se hace foco en el buscador de la Pantalla 2, se
@@ -4090,54 +4110,152 @@ function toggleSplit() {
         panel2.setSymbol(simboloPanel1);
       }
 
-      sincronizarCrosshairs(panel1, panel2);
+      sincronizarPantallas(panel1, panel2);
     }
   } else {
     panel2El.style.display = "none";
     btn.textContent = "⊞ 2 pantallas";
+    document.getElementById("sync-controls").style.display = "none";
   }
   // El ResizeObserver de cada panel se encarga de re-sincronizar el
   // tamaño del chart automáticamente al cambiar el layout.
 }
 
-// ── Sincroniza el crosshair entre las 2 pantallas: al mover el mouse en
-// una, la otra salta a la misma marca de tiempo. La bandera
-// "moviendoDesdeOtroPanel" evita que la actualización programática de un
-// gráfico dispare a su vez el evento del otro (bucle infinito).
-function sincronizarCrosshairs(panelA, panelB) {
+// ── Sincronización entre las 2 pantallas ─────────────────────────────
+// Crosshair + zoom/desplazamiento horizontal. Los interruptores viven en
+// #sync-controls y se recuerdan en localStorage.
+const syncCfg = { zoom: true, crosshair: true, modo: "fecha" };
+try {
+  const g = JSON.parse(localStorage.getItem("syncCfg") || "null");
+  if (g) Object.assign(syncCfg, g);
+} catch (e) {}
+function guardarSyncCfg() { try { localStorage.setItem("syncCfg", JSON.stringify(syncCfg)); } catch (e) {} }
+
+// Intervalo típico entre velas (el mínimo de las últimas, para no confundirse con fines de semana)
+function intervaloVelas(c) {
+  const n = c.length;
+  if (n < 2) return 86400;
+  let m = Infinity;
+  for (let i = Math.max(1, n - 15); i < n; i++) m = Math.min(m, c[i].time - c[i - 1].time);
+  return m > 0 && isFinite(m) ? m : 86400;
+}
+// índice lógico (fraccionario) -> tiempo, extrapolando fuera de los datos
+function indiceATiempo(c, idx) {
+  const n = c.length, iv = intervaloVelas(c);
+  if (idx <= 0) return c[0].time + idx * iv;
+  if (idx >= n - 1) return c[n - 1].time + (idx - (n - 1)) * iv;
+  const i = Math.floor(idx), f = idx - i;
+  return c[i].time + f * (c[i + 1].time - c[i].time);
+}
+// tiempo -> índice lógico (fraccionario)
+function tiempoAIndice(c, t) {
+  const n = c.length, iv = intervaloVelas(c);
+  if (t <= c[0].time) return (t - c[0].time) / iv;
+  if (t >= c[n - 1].time) return (n - 1) + (t - c[n - 1].time) / iv;
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (c[mid].time <= t) lo = mid; else hi = mid; }
+  return lo + (t - c[lo].time) / (c[hi].time - c[lo].time);
+}
+
+// Rango lógico que debe tener "destino" para mostrar lo mismo que "origen"
+function rangoEquivalente(origen, destino, rango) {
+  const cO = origen.getCandles(), cD = destino.getCandles();
+  if (!cO.length || !cD.length) return null;
+  if (syncCfg.modo === "barras") {
+    const uO = cO.length - 1, uD = cD.length - 1;
+    return { from: uD + (rango.from - uO), to: uD + (rango.to - uO) };
+  }
+  return {
+    from: tiempoAIndice(cD, indiceATiempo(cO, rango.from)),
+    to:   tiempoAIndice(cD, indiceATiempo(cO, rango.to)),
+  };
+}
+
+function alinearPantallas(origen, destino) {
+  const r = origen.getChart().timeScale().getVisibleLogicalRange();
+  if (!r) return;
+  const nuevo = rangoEquivalente(origen, destino, r);
+  if (nuevo) destino.getChart().timeScale().setVisibleLogicalRange(nuevo);
+}
+
+function sincronizarPantallas(panelA, panelB) {
   const chartA = panelA.getChart(), chartB = panelB.getChart();
   const serieA = panelA.getCandleSerie(), serieB = panelB.getCandleSerie();
-  let moviendoDesdeOtroPanel = false;
 
+  // ── Crosshair ──
+  let moviendoDesdeOtroPanel = false;
   function precioEnCrosshair(param, serie) {
     const d = param.seriesData.get(serie);
     if (!d) return undefined;
-    return d.value !== undefined ? d.value : d.close;   // line series usa "value", velas usan "close"
+    return d.value !== undefined ? d.value : d.close;
   }
+  function enlazarCrosshair(cO, sO, cD, sD) {
+    cO.subscribeCrosshairMove(param => {
+      if (!syncCfg.crosshair || moviendoDesdeOtroPanel) return;
+      moviendoDesdeOtroPanel = true;
+      try {
+        if (!param.time) cD.clearCrosshairPosition();
+        else {
+          const precio = precioEnCrosshair(param, sO);
+          if (precio !== undefined) cD.setCrosshairPosition(precio, param.time, sD);
+        }
+      } finally { moviendoDesdeOtroPanel = false; }
+    });
+  }
+  enlazarCrosshair(chartA, serieA, chartB, serieB);
+  enlazarCrosshair(chartB, serieB, chartA, serieA);
 
-  chartA.subscribeCrosshairMove(param => {
-    if (moviendoDesdeOtroPanel) return;
-    moviendoDesdeOtroPanel = true;
-    if (!param.time) {
-      chartB.clearCrosshairPosition();
-    } else {
-      const precio = precioEnCrosshair(param, serieA);
-      if (precio !== undefined) chartB.setCrosshairPosition(precio, param.time, serieB);
-    }
-    moviendoDesdeOtroPanel = false;
-  });
+  // ── Zoom / desplazamiento ──
+  // Solo se propaga lo que el usuario hace con el mouse/dedo en ese gráfico:
+  // así cargar otro símbolo (que resetea la vista) no arrastra al otro panel,
+  // y no hay rebote infinito entre los dos.
+  const actividad = new Map();          // panel -> instante hasta el que cuenta como "el usuario está actuando"
+  const ahora = () => performance.now();
+  function marcar(panel, ms) { actividad.set(panel, ahora() + ms); }
+  function vigilar(panel, otro) {
+    const el = panel.getChartEl();
+    let apretado = false;
+    el.addEventListener("pointerdown", () => { apretado = true; marcar(panel, 1e9); }, true);
+    window.addEventListener("pointerup", () => { if (apretado) { apretado = false; marcar(panel, 400); } }, true);
+    el.addEventListener("wheel", () => marcar(panel, 400), { passive: true, capture: true });
+    el.addEventListener("dblclick", () => marcar(panel, 400), true);
+    panel.getChart().timeScale().subscribeVisibleLogicalRangeChange(rango => {
+      if (!syncCfg.zoom || !rango) return;
+      if ((actividad.get(panel) || 0) < ahora()) return;
+      if ((actividad.get(otro) || 0) >= ahora()) return;   // el otro está siendo usado: no lo pisamos
+      const nuevo = rangoEquivalente(panel, otro, rango);
+      if (!nuevo) return;
+      const actual = otro.getChart().timeScale().getVisibleLogicalRange();
+      if (actual && Math.abs(actual.from - nuevo.from) < 0.05 && Math.abs(actual.to - nuevo.to) < 0.05) return;
+      otro.getChart().timeScale().setVisibleLogicalRange(nuevo);
+    });
+  }
+  vigilar(panelA, panelB);
+  vigilar(panelB, panelA);
 
-  chartB.subscribeCrosshairMove(param => {
-    if (moviendoDesdeOtroPanel) return;
-    moviendoDesdeOtroPanel = true;
-    if (!param.time) {
-      chartA.clearCrosshairPosition();
-    } else {
-      const precio = precioEnCrosshair(param, serieB);
-      if (precio !== undefined) chartA.setCrosshairPosition(precio, param.time, serieA);
-    }
-    moviendoDesdeOtroPanel = false;
+  // ── Controles de la barra ──
+  const bZoom = document.getElementById("sync-zoom");
+  const bCross = document.getElementById("sync-cross");
+  const sModo = document.getElementById("sync-modo");
+  const pintar = () => {
+    bZoom.classList.toggle("activo", syncCfg.zoom);
+    bCross.classList.toggle("activo", syncCfg.crosshair);
+    sModo.value = syncCfg.modo;
+  };
+  pintar();
+  bZoom.addEventListener("click", () => {
+    syncCfg.zoom = !syncCfg.zoom; guardarSyncCfg(); pintar();
+    if (syncCfg.zoom) alinearPantallas(panelA, panelB);
   });
+  bCross.addEventListener("click", () => {
+    syncCfg.crosshair = !syncCfg.crosshair; guardarSyncCfg(); pintar();
+    if (!syncCfg.crosshair) { chartA.clearCrosshairPosition(); chartB.clearCrosshairPosition(); }
+  });
+  sModo.addEventListener("change", () => {
+    syncCfg.modo = sModo.value; guardarSyncCfg();
+    if (syncCfg.zoom) alinearPantallas(panelA, panelB);
+  });
+  document.getElementById("sync-alinear").addEventListener("click", () => alinearPantallas(panelA, panelB));
 }
 
 // ── Verificar si el servidor corre (compartido, un solo backend) ──
