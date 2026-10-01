@@ -8,4 +8,5 @@ urlpatterns = [
     path("api/snapshot/", views.api_snapshot, name="api_snapshot"),
     path("api/watchlist/", views.guardar_watchlist, name="guardar_watchlist"),
     path("api/recalcular/", views.recalcular_ahora, name="recalcular_ahora"),
+    path("api/validar/", views.validar_item, name="validar_item"),
 ]

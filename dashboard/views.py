@@ -8,6 +8,7 @@ from django.shortcuts import render, redirect
 from django.views.decorators.http import require_POST
 
 from core.engine import analysis
+from core.engine.analysis import Mt5Unavailable
 from .models import DivisaSeguida, TemporalidadSeguida, TableroSnapshot
 from .tasks import refrescar_tablero_usuario, _borrar_snapshots_fuera_de_seleccion
 
@@ -46,9 +47,17 @@ def home(request):
     # así que una divisa custom (ej. EURNZD) quedaba activa en el tablero
     # de abajo pero invisible en la lista de checkboxes de arriba.
     divisas_para_mostrar = list(analysis.DIVISAS_SUGERIDAS) + [d for d in divisas if d not in analysis.DIVISAS_SUGERIDAS]
+    # Igual que con las divisas: las temporalidades agregadas a mano (ej.
+    # M5) se suman a las sugeridas, ordenadas de menor a mayor según el
+    # orden de MT5 para que M5 quede antes de M15 y no al final.
+    orden_tf = {tf: i for i, tf in enumerate(analysis.TIMEFRAMES_SOPORTADOS)}
+    timeframes_para_mostrar = sorted(
+        set(analysis.ALL_TIMEFRAMES) | set(timeframes),
+        key=lambda tf: orden_tf.get(tf, len(orden_tf)),
+    )
     return render(request, "dashboard/home.html", {
         "divisas_sugeridas": divisas_para_mostrar,
-        "todos_los_timeframes": analysis.ALL_TIMEFRAMES,
+        "todos_los_timeframes": timeframes_para_mostrar,
         "mis_divisas": divisas,
         "mis_timeframes": timeframes,
     })
@@ -148,6 +157,9 @@ def guardar_watchlist(request):
     body = json.loads(request.body or "{}")
     simbolos = [s.strip().upper() for s in body.get("simbolos", []) if s.strip()]
     timeframes = [t.strip().upper() for t in body.get("timeframes", []) if t.strip()]
+    # Guardia barata (no consulta MT5): una temporalidad fuera de la tabla
+    # de MT5 jamás podría calcularse y solo dejaría un error permanente.
+    timeframes = [t for t in timeframes if t in analysis.TIMEFRAMES_SOPORTADOS]
 
     # Se compara ANTES de tocar nada — necesito saber qué había para
     # decidir si esto es "solo quitar" o si hay algo nuevo.
@@ -232,3 +244,39 @@ def recalcular_ahora(request):
                               "error": f"No se pudo encolar el recálculo: {type(e).__name__}: {e}"}, status=503)
 
     return JsonResponse({"ok": True, "recalculo_en_curso": recalculo_en_curso})
+
+
+@login_required
+@require_POST
+def validar_item(request):
+    """
+    Botón "+ Agregar" (divisas y temporalidades): antes de sumar nada a la
+    lista, le pregunta a MT5 si existe.
+
+    Body: {"tipo": "divisa" | "temporalidad", "valor": "USDMXN"}.
+    Respuesta: {"ok": bool, "valor": <nombre normalizado>, "mensaje": str}.
+
+    No guarda nada — solo valida. Quien guarda sigue siendo
+    guardar_watchlist(), así el flujo de generación/Celery no cambia.
+    Si MT5 no está disponible responde 503: es mejor avisar que agregar una
+    divisa sin poder confirmar que existe.
+    """
+    try:
+        body = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"ok": False, "mensaje": "Pedido inválido."}, status=400)
+
+    tipo = body.get("tipo")
+    valor = str(body.get("valor", ""))
+    try:
+        if tipo == "divisa":
+            resultado = analysis.validar_simbolo_mt5(valor)
+        elif tipo == "temporalidad":
+            resultado = analysis.validar_timeframe_mt5(valor)
+        else:
+            return JsonResponse({"ok": False, "mensaje": "Tipo desconocido."}, status=400)
+    except Mt5Unavailable as e:
+        logger.warning("[validar_item] MT5 no disponible: %s", e)
+        return JsonResponse({"ok": False, "mt5_no_disponible": True,
+                             "mensaje": f"No se pudo consultar MT5, así que no se agregó nada: {e}"}, status=503)
+    return JsonResponse(resultado)

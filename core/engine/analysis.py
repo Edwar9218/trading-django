@@ -18,6 +18,7 @@ smart_money_flow, evaluar_todos_spn, etc.).
 import logging
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -1174,7 +1175,10 @@ def compute_multi_timeframe_spn(symbol=None, hasta=None, timeframes=None, auto_p
         return {"error": "channel_breakout_status.py no está disponible junto a servidor.py."}
 
     symbol = (symbol or cfg("SYMBOL", "EURUSD")).strip().upper()
-    timeframes = [t for t in (timeframes or ALL_TIMEFRAMES) if t in ALL_TIMEFRAMES]
+    # Se aceptan todas las temporalidades que MT5 soporta (_TF_MAP), no solo
+    # las 12 sugeridas de ALL_TIMEFRAMES — así una temporalidad agregada a
+    # mano desde el tablero (ej. M5) no se descarta en silencio acá.
+    timeframes = [t for t in (timeframes or ALL_TIMEFRAMES) if t in _TF_MAP]
     if not timeframes:
         return {"error": "No se eligió ninguna temporalidad válida."}
 
@@ -1208,6 +1212,102 @@ DIVISAS_SUGERIDAS = [
     "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
     "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "XAUUSD",
 ]
+
+
+# ══════════════════════════════════════════════════════════
+# Validación contra MT5 (botón "+ Agregar" del tablero)
+# ══════════════════════════════════════════════════════════
+# Todas las temporalidades que el motor sabe pedirle a MT5 (incluye M1 y
+# M5, que no están en ALL_TIMEFRAMES porque esa es solo la lista
+# SUGERIDA de checkboxes). Se usa para ordenar y para validar.
+TIMEFRAMES_SOPORTADOS = list(_TF_MAP.keys())
+
+_RE_SIMBOLO = re.compile(r"^[A-Z0-9._#&\-]{1,20}$")
+_RE_TF_INVERTIDO = re.compile(r"^(\d+)([MHDW])$")   # "4H" -> "H4", "15M" -> "M15"
+
+
+def normalizar_timeframe(valor):
+    """'h4' -> 'H4'; también acepta la forma invertida ('4h', '15m', '1d',
+    '1w'). No decide si existe — eso lo hace validar_timeframe_mt5()."""
+    tf = (valor or "").strip().upper()
+    m = _RE_TF_INVERTIDO.match(tf)
+    if m:
+        tf = f"{m.group(2)}{m.group(1)}"
+    if tf in ("1MN", "MN"):
+        tf = "MN1"
+    return tf
+
+
+def validar_timeframe_mt5(valor):
+    """Pregunta a la librería de MT5 si esa temporalidad existe.
+
+    Una temporalidad no es algo que viva en el broker (como un símbolo):
+    es una constante del API de MT5 (mt5.TIMEFRAME_H4...). Por eso alcanza
+    con comprobar que la constante exista en el paquete MetaTrader5 —
+    no hace falta que el terminal esté abierto para esto.
+
+    Devuelve {"ok": bool, "valor": <normalizado>, "mensaje": str}.
+    """
+    tf = normalizar_timeframe(valor)
+    if not tf:
+        return {"ok": False, "valor": "", "mensaje": "Escribí una temporalidad, ej. H4."}
+
+    attr = _TF_MAP.get(tf)
+    if attr is None:
+        return {"ok": False, "valor": tf,
+                "mensaje": f"La temporalidad \"{tf}\" no existe en MT5. "
+                           f"Las disponibles son: {', '.join(TIMEFRAMES_SOPORTADOS)}."}
+    if mt5 is None:
+        raise Mt5Unavailable("el paquete MetaTrader5 no está instalado en este Python "
+                             "(pip install MetaTrader5 — solo funciona en Windows)")
+    if not hasattr(mt5, attr):
+        return {"ok": False, "valor": tf, "mensaje": f"Esta versión de MT5 no reconoce la temporalidad \"{tf}\"."}
+    return {"ok": True, "valor": tf, "mensaje": f"Temporalidad {tf} agregada."}
+
+
+def _simbolos_parecidos(simbolo, maximo=5):
+    """Nombres del broker que contienen lo que escribió el usuario — útil
+    porque muchos brokers agregan sufijos (EURUSD.m, EURUSDm, EURUSD#)."""
+    try:
+        todos = mt5.symbols_get() or []
+    except Exception:
+        return []
+    nombres = [s.name for s in todos]
+    parecidos = [n for n in nombres if simbolo in n.upper() or n.upper() in simbolo]
+    parecidos.sort(key=lambda n: (len(n), n))
+    return parecidos[:maximo]
+
+
+def validar_simbolo_mt5(valor):
+    """Pregunta al terminal MT5 si el símbolo existe en el broker.
+
+    Usa symbol_info(): devuelve None si el broker no lo tiene. Si existe
+    pero no está visible en el Market Watch se lo activa (symbol_select),
+    igual que hace fetch_vela_actual() — sin eso MT5 no entrega velas.
+
+    Lanza Mt5Unavailable si el terminal no está abierto (el llamador
+    decide cómo avisar — no se debe agregar nada "a ciegas").
+    Devuelve {"ok": bool, "valor": <nombre>, "mensaje": str, "sugerencias": [...]}.
+    """
+    simbolo = (valor or "").strip().upper()
+    if not simbolo:
+        return {"ok": False, "valor": "", "mensaje": "Escribí una divisa, ej. USDMXN.", "sugerencias": []}
+    if not _RE_SIMBOLO.match(simbolo):
+        return {"ok": False, "valor": simbolo, "sugerencias": [],
+                "mensaje": f"\"{simbolo}\" no parece un símbolo válido (solo letras, números y . _ # & -)."}
+
+    with mt5_session():
+        info = mt5.symbol_info(simbolo)
+        if info is None:
+            sugerencias = _simbolos_parecidos(simbolo)
+            msg = f"La divisa \"{simbolo}\" no existe en tu MT5."
+            if sugerencias:
+                msg += f" ¿Quisiste decir: {', '.join(sugerencias)}?"
+            return {"ok": False, "valor": simbolo, "mensaje": msg, "sugerencias": sugerencias}
+        if not info.visible and not mt5.symbol_select(simbolo, True):
+            return {"ok": False, "valor": simbolo, "sugerencias": [],
+                    "mensaje": f"\"{simbolo}\" existe pero MT5 no pudo activarla en el Market Watch."}
+    return {"ok": True, "valor": simbolo, "mensaje": f"Divisa {simbolo} agregada.", "sugerencias": []}
 
 
 def compute_multi_symbol_spn(symbols, timeframes=None, hasta=None, auto_pivot_override=None):

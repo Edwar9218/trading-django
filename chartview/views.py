@@ -6,7 +6,33 @@ from django.shortcuts import render
 from django.views.decorators.http import require_POST
 
 from core.engine import analysis
+from dashboard.models import DivisaSeguida, TemporalidadSeguida
 from drawings.models import Dibujo
+
+
+def _watchlist_usuario(usuario):
+    """Divisas y temporalidades que el usuario sigue en el tablero (la
+    fuente única de verdad para ambas pantallas). Las temporalidades salen
+    ordenadas de menor a mayor según el orden de MT5."""
+    divisas = list(DivisaSeguida.objects.filter(usuario=usuario)
+                   .order_by("orden").values_list("simbolo", flat=True))
+    orden_tf = {tf: i for i, tf in enumerate(analysis.TIMEFRAMES_SOPORTADOS)}
+    timeframes = sorted(
+        TemporalidadSeguida.objects.filter(usuario=usuario).values_list("timeframe", flat=True),
+        key=lambda tf: orden_tf.get(tf, len(orden_tf)),
+    )
+    return divisas, timeframes
+
+
+@login_required
+def api_watchlist(request):
+    """Lectura liviana (solo SELECT) de lo que se sigue en el tablero. El
+    gráfico la consulta al volver a la pestaña y cuando el tablero avisa
+    de un cambio, para reflejar divisas/temporalidades nuevas sin recargar."""
+    divisas, timeframes = _watchlist_usuario(request.user)
+    resp = JsonResponse({"divisas": divisas, "timeframes": timeframes})
+    resp["Cache-Control"] = "no-store"
+    return resp
 
 
 @login_required
@@ -17,7 +43,15 @@ def grafico(request):
     tablero con ?symbol=...&timeframe=...&hasta=... precargado.
     """
     perfil = request.user.perfil
+    # Las divisas y temporalidades que el usuario sigue en el tablero son
+    # las mismas que ofrece el gráfico (datalist y selector) — así lo que
+    # se agrega en un lado aparece en el otro. Si todavía no eligió nada
+    # en el tablero, la plantilla cae a su lista fija de siempre.
+    mis_divisas, mis_timeframes = _watchlist_usuario(request.user)
     return render(request, "chartview/grafico.html", {
+        "mis_divisas": mis_divisas,
+        "mis_timeframes": mis_timeframes,
+        "timeframes_soportados": analysis.TIMEFRAMES_SOPORTADOS,
         "symbol_inicial": request.GET.get("symbol", ""),
         "timeframe_inicial": request.GET.get("timeframe", ""),
         "hasta_inicial": request.GET.get("hasta", ""),

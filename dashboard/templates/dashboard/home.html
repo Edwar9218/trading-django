@@ -16,15 +16,21 @@
   .picker-row label { display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; user-select: none; }
   .picker-row input[type="checkbox"] { accent-color: #2962ff; cursor: pointer; width: 15px; height: 15px; }
   .custom-symbol-wrap { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
-  #custom-symbol {
+  .add-msg { font-size: 12px; margin-top: 6px; min-height: 16px; }
+  .add-msg.error { color: #ff5252; }
+  .add-msg.ok { color: #00c896; }
+  .add-msg.cargando { color: #848e9c; }
+  #btn-add-symbol:disabled, #btn-add-tf:disabled { opacity: .6; cursor: wait; }
+  #custom-tf { width: 230px; }
+  #custom-symbol, #custom-tf {
     background: #1a1e29; border: 1px solid #363c4e; border-radius: 6px;
     color: #d1d4dc; font-size: 12.5px; padding: 6px 10px; width: 180px;
   }
-  #btn-add-symbol, #btn-guardar, #btn-recalcular {
+  #btn-add-symbol, #btn-add-tf, #btn-guardar, #btn-recalcular {
     background: #2962ff; border: none; border-radius: 6px; color: #fff;
     font-size: 12.5px; font-weight: 600; padding: 7px 16px; cursor: pointer;
   }
-  #btn-add-symbol:hover, #btn-guardar:hover, #btn-recalcular:hover { background: #1e4fd6; }
+  #btn-add-symbol:hover, #btn-add-tf:hover, #btn-guardar:hover, #btn-recalcular:hover { background: #1e4fd6; }
   #btn-recalcular {
     background: transparent; border: 1px solid #363c4e; color: #d1d4dc; margin-left: 8px;
   }
@@ -32,7 +38,7 @@
   #btn-recalcular:disabled { opacity: .6; cursor: default; }
   #btn-recalcular .girando { display: inline-block; animation: girar 1s linear infinite; }
   @keyframes girar { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-  #btn-add-symbol { padding: 6px 12px; }
+  #btn-add-symbol, #btn-add-tf { padding: 6px 12px; }
 
   #estado-actualizacion { color: #848e9c; font-size: 11.5px; margin-bottom: 10px; }
   #estado-actualizacion .punto { display:inline-block; width:7px; height:7px; border-radius:50%; background:#00c896; margin-right:5px; }
@@ -245,6 +251,7 @@
     <input id="custom-symbol" type="text" placeholder="Agregar otra divisa, ej. USDMXN" maxlength="20" />
     <button id="btn-add-symbol" type="button">+ Agregar</button>
   </div>
+  <div class="add-msg" id="msg-add-symbol" role="status"></div>
 </div>
 
 <div class="picker-section">
@@ -254,6 +261,11 @@
       <label><input type="checkbox" class="tf-chk" value="{{ tf }}" {% if tf in mis_timeframes %}checked{% endif %}> {{ tf }}</label>
     {% endfor %}
   </div>
+  <div class="custom-symbol-wrap">
+    <input id="custom-tf" type="text" placeholder="Agregar otra temporalidad, ej. M5" maxlength="6" />
+    <button id="btn-add-tf" type="button">+ Agregar</button>
+  </div>
+  <div class="add-msg" id="msg-add-tf" role="status"></div>
 </div>
 
 <button id="btn-guardar" type="button">💾 Guardar selección</button>
@@ -1108,6 +1120,12 @@ async function guardarWatchlist() {
   const data = await resp.json();
   console.log("[guardarWatchlist] respuesta del servidor:", resp.status, data);
 
+  // Avisa a las pestañas del gráfico abiertas para que actualicen sus
+  // listas de divisas/temporalidades al instante (ver sincronizarWatchlist
+  // en grafico.html). El valor cambia siempre para que el evento "storage"
+  // se dispare aunque se guarde dos veces lo mismo.
+  try { localStorage.setItem("watchlist_cambio", String(Date.now())); } catch (e) { /* localStorage bloqueado: el gráfico igual se sincroniza al volver a la pestaña */ }
+
   // Si solo se destildó algo (sin agregar nada nuevo), el servidor ya
   // borró lo que sobraba y NO hace falta esperar ningún cálculo — con
   // refrescar la vista una vez alcanza, sin pasar por el "Calculando…"
@@ -1220,19 +1238,70 @@ async function recalcularAhora() {
     document.getElementById("estado-actualizacion").textContent = "No se pudo conectar con el servidor.";
   }
 }
-document.getElementById("btn-add-symbol").addEventListener("click", () => {
-  const input = document.getElementById("custom-symbol");
-  const val = input.value.trim().toUpperCase();
-  if (!val) return;
-  const fila = document.getElementById("divisas-row");
-  const existente = fila.querySelector(`.divisa-chk[value="${val}"]`);
-  if (existente) { existente.checked = true; } else {
-    const label = document.createElement("label");
-    label.innerHTML = `<input type="checkbox" class="divisa-chk" value="${val}" checked> ${val}`;
-    fila.appendChild(label);
+// ── "+ Agregar" (divisas y temporalidades) ──
+// Antes de sumar nada a la lista se le pregunta a MT5 si existe (endpoint
+// /dashboard/api/validar/). Si existe, se tilda y se guarda la selección
+// al instante — así el gráfico (que lee la misma lista desde el servidor)
+// muestra lo mismo sin pasos extra. Si no existe, se muestra el motivo y
+// no se agrega nada.
+function mostrarMensajeAgregar(idMsg, texto, clase) {
+  const el = document.getElementById(idMsg);
+  el.textContent = texto;
+  el.className = "add-msg " + (clase || "");
+}
+
+function agregarCheckbox(filaId, claseChk, valor) {
+  const fila = document.getElementById(filaId);
+  const existente = fila.querySelector(`.${claseChk}[value="${valor}"]`);
+  if (existente) { existente.checked = true; return; }
+  const label = document.createElement("label");
+  const chk = document.createElement("input");
+  chk.type = "checkbox"; chk.className = claseChk; chk.value = valor; chk.checked = true;
+  label.appendChild(chk);
+  label.appendChild(document.createTextNode(" " + valor));
+  fila.appendChild(label);
+}
+
+function configurarAgregar({ tipo, inputId, botonId, msgId, filaId, claseChk }) {
+  const input = document.getElementById(inputId);
+  const boton = document.getElementById(botonId);
+
+  async function agregar() {
+    const valor = input.value.trim();
+    if (!valor) return;
+    boton.disabled = true;
+    mostrarMensajeAgregar(msgId, "Consultando MT5…", "cargando");
+    try {
+      const resp = await fetch("{% url 'dashboard:validar_item' %}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF },
+        body: JSON.stringify({ tipo, valor }),
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        mostrarMensajeAgregar(msgId, data.mensaje || "No se pudo validar.", "error");
+        return;
+      }
+      agregarCheckbox(filaId, claseChk, data.valor);
+      input.value = "";
+      mostrarMensajeAgregar(msgId, data.mensaje, "ok");
+      await guardarWatchlist();
+    } catch (e) {
+      console.error("[agregar]", e);
+      mostrarMensajeAgregar(msgId, "No se pudo conectar con el servidor.", "error");
+    } finally {
+      boton.disabled = false;
+    }
   }
-  input.value = "";
-});
+
+  boton.addEventListener("click", agregar);
+  input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); agregar(); } });
+}
+
+configurarAgregar({ tipo: "divisa", inputId: "custom-symbol", botonId: "btn-add-symbol",
+                    msgId: "msg-add-symbol", filaId: "divisas-row", claseChk: "divisa-chk" });
+configurarAgregar({ tipo: "temporalidad", inputId: "custom-tf", botonId: "btn-add-tf",
+                    msgId: "msg-add-tf", filaId: "timeframes-row", claseChk: "tf-chk" });
 
 document.getElementById("btn-guardar").addEventListener("click", guardarWatchlist);
 document.getElementById("btn-recalcular").addEventListener("click", recalcularAhora);

@@ -849,52 +849,62 @@
       <button type="button" class="btn-clear-symbol" tabindex="-1" title="Borrar">✕</button>
     </span>
     <datalist class="symbol-list">
-      <option value="EURUSD"></option>
-      <option value="GBPUSD"></option>
-      <option value="USDJPY"></option>
-      <option value="USDCHF"></option>
-      <option value="USDCAD"></option>
-      <option value="AUDUSD"></option>
-      <option value="NZDUSD"></option>
-      <option value="EURGBP"></option>
-      <option value="EURJPY"></option>
-      <option value="EURCHF"></option>
-      <option value="EURAUD"></option>
-      <option value="EURCAD"></option>
-      <option value="GBPJPY"></option>
-      <option value="GBPCHF"></option>
-      <option value="GBPAUD"></option>
-      <option value="AUDJPY"></option>
-      <option value="AUDCAD"></option>
-      <option value="AUDNZD"></option>
-      <option value="CADJPY"></option>
-      <option value="CHFJPY"></option>
-      <option value="NZDJPY"></option>
-      <option value="XAUUSD"></option>
-      <option value="XAGUSD"></option>
-      <option value="US30"></option>
-      <option value="US500"></option>
-      <option value="NAS100"></option>
-      <option value="GER40"></option>
-      <option value="UK100"></option>
-      <option value="BTCUSD"></option>
-      <option value="ETHUSD"></option>
+      {% if mis_divisas %}
+        {% for d in mis_divisas %}<option value="{{ d }}"></option>
+        {% endfor %}
+      {% else %}
+        <option value="EURUSD"></option>
+        <option value="GBPUSD"></option>
+        <option value="USDJPY"></option>
+        <option value="USDCHF"></option>
+        <option value="USDCAD"></option>
+        <option value="AUDUSD"></option>
+        <option value="NZDUSD"></option>
+        <option value="EURGBP"></option>
+        <option value="EURJPY"></option>
+        <option value="EURCHF"></option>
+        <option value="EURAUD"></option>
+        <option value="EURCAD"></option>
+        <option value="GBPJPY"></option>
+        <option value="GBPCHF"></option>
+        <option value="GBPAUD"></option>
+        <option value="AUDJPY"></option>
+        <option value="AUDCAD"></option>
+        <option value="AUDNZD"></option>
+        <option value="CADJPY"></option>
+        <option value="CHFJPY"></option>
+        <option value="NZDJPY"></option>
+        <option value="XAUUSD"></option>
+        <option value="XAGUSD"></option>
+        <option value="US30"></option>
+        <option value="US500"></option>
+        <option value="NAS100"></option>
+        <option value="GER40"></option>
+        <option value="UK100"></option>
+        <option value="BTCUSD"></option>
+        <option value="ETHUSD"></option>
+      {% endif %}
     </datalist>
 
     <label>Timeframe:</label>
     <select class="timeframe-select">
-      <option value="M15">M15</option>
-      <option value="M30">M30</option>
-      <option value="H1">H1</option>
-      <option value="H2">H2</option>
-      <option value="H3">H3</option>
-      <option value="H4" selected>H4</option>
-      <option value="H6">H6</option>
-      <option value="H8">H8</option>
-      <option value="H12">H12</option>
-      <option value="D1">D1</option>
-      <option value="W1">W1</option>
-      <option value="MN1">MN1</option>
+      {% if mis_timeframes %}
+        {% for tf in mis_timeframes %}<option value="{{ tf }}"{% if tf == "H4" %} selected{% endif %}>{{ tf }}</option>
+        {% endfor %}
+      {% else %}
+        <option value="M15">M15</option>
+        <option value="M30">M30</option>
+        <option value="H1">H1</option>
+        <option value="H2">H2</option>
+        <option value="H3">H3</option>
+        <option value="H4" selected>H4</option>
+        <option value="H6">H6</option>
+        <option value="H8">H8</option>
+        <option value="H12">H12</option>
+        <option value="D1">D1</option>
+        <option value="W1">W1</option>
+        <option value="MN1">MN1</option>
+      {% endif %}
     </select>
 
     <button class="btn-cargar">▶ Cargar</button>
@@ -1006,6 +1016,7 @@ const API = {
   vela_actual: "{% url 'chartview:api_vela_actual' %}",
   velas_extra: "{% url 'chartview:api_velas_extra' %}",
   config: "{% url 'chartview:api_config' %}",
+  watchlist: "{% url 'chartview:api_watchlist' %}",
   ping: "{% url 'chartview:api_ping' %}",
   tablero: "{% url 'dashboard:home' %}",
   dibujos_listar: "{% url 'chartview:api_dibujos_listar' %}",
@@ -3638,11 +3649,42 @@ function crearPanel(rootEl, opciones = {}) {
     actualizarBtnClear();
   }
 
+  // Temporalidades que MT5 soporta — el selector solo muestra las seguidas
+  // en el tablero, pero un atajo (?timeframe=M5) o una temporalidad ya
+  // cargada no deben perderse: se suma la opción en vez de ignorarla.
+  const TF_CONOCIDOS = [{% for tf in timeframes_soportados %}"{{ tf }}",{% endfor %}];
+
   function setTimeframe(tf) {
     const val = (tf || "").toUpperCase();
+    if (![...timeframeSelect.options].some(o => o.value === val) && TF_CONOCIDOS.includes(val)) {
+      // Se reordena de menor a mayor para que, por ejemplo, H1 quede
+      // entre M30 y H4 y no al final de la lista.
+      const opciones = [...timeframeSelect.options, new Option(val, val)]
+        .sort((a, b) => TF_CONOCIDOS.indexOf(a.value) - TF_CONOCIDOS.indexOf(b.value));
+      timeframeSelect.replaceChildren(...opciones);
+    }
     if ([...timeframeSelect.options].some(o => o.value === val)) {
       timeframeSelect.value = val;
       timeframeFijadoManual = true;
+    }
+  }
+
+  // Reemplaza las opciones del buscador de divisas y del selector de
+  // temporalidad por las que se siguen en el tablero, sin tocar lo que
+  // el panel ya tiene elegido: si la temporalidad actual ya no está
+  // seguida se conserva como opción (si no, el selector saltaría a otra
+  // y el gráfico mostrado dejaría de coincidir con lo que dice el menú).
+  function actualizarOpciones(divisas, timeframes) {
+    if (divisas && divisas.length) {
+      symbolList.replaceChildren(...divisas.map(d => new Option("", d)));
+    }
+    if (timeframes && timeframes.length) {
+      const actual = timeframeSelect.value;
+      const lista = timeframes.includes(actual) ? timeframes : [...timeframes, actual].filter(Boolean);
+      const orden = t => { const i = TF_CONOCIDOS.indexOf(t); return i < 0 ? 999 : i; };
+      lista.sort((a, b) => orden(a) - orden(b));
+      timeframeSelect.replaceChildren(...lista.map(t => new Option(t, t)));
+      timeframeSelect.value = actual;
     }
   }
 
@@ -3666,7 +3708,7 @@ function crearPanel(rootEl, opciones = {}) {
   }
 
   return {
-    init, cargarDatos, resize: resizeOverlayCanvas, symbolInput, setSymbol, setTimeframe,
+    init, cargarDatos, resize: resizeOverlayCanvas, symbolInput, setSymbol, setTimeframe, actualizarOpciones,
     getChart: () => chart, getCandleSerie: () => candleSerie,
     getChartEl: () => chartPlot, getCandles: () => loadedCandles,
     getTimeframe: () => timeframeSelect.value,
@@ -4273,6 +4315,27 @@ async function verificarServidor() {
     label.textContent = "Servidor offline — ejecuta arrancar.bat";
   }
 }
+
+// ── Sincronización con el tablero ──
+// El tablero es quien decide qué divisas y temporalidades se siguen. Acá
+// se vuelve a leerlas (1) al volver a esta pestaña, (2) apenas el tablero
+// avisa que guardó un cambio (por localStorage, que dispara el evento
+// "storage" en las OTRAS pestañas del mismo navegador) y (3) cada 60 s
+// como red de seguridad. Solo lee — no dispara ningún cálculo.
+async function sincronizarWatchlist() {
+  try {
+    const r = await fetch(API.watchlist, { cache: "no-store" });
+    if (!r.ok) return;
+    const w = await r.json();
+    [panel1, panel2].forEach(p => { if (p) p.actualizarOpciones(w.divisas, w.timeframes); });
+  } catch (e) {
+    console.warn("[sincronizarWatchlist]", e);
+  }
+}
+window.addEventListener("storage", e => { if (e.key === "watchlist_cambio") sincronizarWatchlist(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) sincronizarWatchlist(); });
+window.addEventListener("focus", sincronizarWatchlist);
+setInterval(sincronizarWatchlist, 60000);
 </script>
 <script>
 // La barra de navegación de arriba está oculta por defecto (más espacio para
