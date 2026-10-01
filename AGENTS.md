@@ -4,7 +4,7 @@
 > Basado en el código, la configuración y el historial de git reales.
 > Lo que no pudo determinarse está marcado como **No determinado**.
 >
-> Última sincronización: commit `f87138c` (rama `feature/sr-fractal`).
+> Última sincronización: commit `0e8ec72` (rama `feature/sr-fractal`).
 
 ---
 
@@ -42,10 +42,21 @@ propósito — ver Decisiones técnicas.
 - Login / registro / logout multi-usuario, perfil automático por señal.
 - Tablero: watchlist de divisas × temporalidades, snapshots S-P-N,
   polling cada 60 s, overlay de progreso, bloqueo de pestaña única.
+- Tablero: **"+ Agregar" para divisas y para temporalidades**, validado
+  contra MT5 antes de sumar nada (ver §5).
+- Tablero: **medidor de fuerza del USD** (−100..100) con veredicto
+  multi-temporalidad, calculado en el cliente.
+- **Watchlist compartida tablero ↔ gráfico**: el buscador de Divisa y el
+  selector de Timeframe del gráfico salen de lo que se sigue en el
+  tablero y se actualizan sin recargar.
 - Cálculo en Celery con sistema de generación (cancela trabajo obsoleto)
   y prioridades (lo manual pasa antes que el barrido automático).
 - Gráfico: velas, 4 canales, Kalman, Smart Money Flow, "Cargar más
-  historial", 2 pantallas, multi-temporalidad, crosshair sincronizado.
+  historial", 2 pantallas, multi-temporalidad, zoom/scroll/crosshair
+  sincronizados entre pantallas.
+- Gráfico: **Modo Online / Modo Backtesting** con reproductor tipo bar
+  replay y **vela en vivo** (sondeo cada 2 s) en Modo Online.
+- Gráfico: botón para apagar/encender todos los indicadores de golpe.
 - Indicadores de navegador: KN Smart TP/SL, S/R Avanzado, S/R Fractal,
   Secuencia estructural.
 - Persistencia de dibujos por usuario + divisa + temporalidad.
@@ -64,9 +75,15 @@ propósito — ver Decisiones técnicas.
   flechas de ruptura, cruces de invalidación y niveles R→S/S→R se
   apagaron en el commit `2c7192d`). No borrar ese código: está desactivado
   por decisión, no por estar roto.
-- **Tests**: solo existen dos suites JS (`chartview/tests_js/`) y una
-  clase de tests Django (`chartview/tests.py::SRFractalTests`). El resto
-  de `tests.py` son los stubs vacíos de `startapp`.
+- **Tests**: dos suites JS (`chartview/tests_js/`), tests Django en
+  `chartview/tests.py` (`SRFractalTests`, `BotonTodosTests`) y en
+  `dashboard/tests.py` (16 tests: validación contra MT5 con un MT5
+  simulado, sincronización tablero↔gráfico, `api/watchlist/`). El resto
+  de los `tests.py` son stubs vacíos de `startapp`.
+- **Validación contra MT5 (`validar_item`)**: cubierta por tests con un
+  MT5 simulado (`_FakeMt5` en `dashboard/tests.py`) y **probada a mano por
+  el dueño contra un terminal real, funcionando**. Falta ejercitar con
+  calma los casos límite (símbolos con sufijo del broker, MT5 cerrado).
 
 ### Pendiente / no hecho
 - Endurecimiento para producción: `DEBUG=False`, `ALLOWED_HOSTS`, HTTPS,
@@ -180,6 +197,25 @@ Navegador → GET /grafico/api/datos/?symbol&timeframe&hasta
 
 Los indicadores (KN, S/R Avanzado, S/R Fractal, Secuencia) se calculan
 en el NAVEGADOR sobre esas mismas velas — no piden nada más al servidor.
+
+Modo Online → GET /grafico/api/vela_actual/ cada 2 s (fetch_vela_actual)
+              → solo la última vela, aplicada con candleSerie.update()
+Modo Backtesting → mismo /datos con `hasta` (fecha+hora); el reproductor
+                   avanza vela a vela (piso de 300 ms entre pedidos)
+```
+
+### Flujo de datos — watchlist compartida (tablero ↔ gráfico)
+
+```
+Tablero: "+ Agregar" → POST /api/validar/ → analysis.validar_*_mt5()
+         ├─ no existe → mensaje, NO se agrega nada
+         └─ existe    → se tilda + guardarWatchlist() (POST /api/watchlist/)
+                          └─ localStorage["watchlist_cambio"] = Date.now()
+
+Gráfico: sincronizarWatchlist() → GET /grafico/api/watchlist/ (solo SELECT)
+         se dispara por: evento "storage", foco/visibilidad de la pestaña,
+         y cada 60 s. Reescribe el datalist de Divisa y el select de
+         Timeframe de cada panel SIN tocar lo que el panel ya tiene elegido.
 ```
 
 ---
@@ -194,11 +230,52 @@ en el NAVEGADOR sobre esas mismas velas — no piden nada más al servidor.
 - **Pestaña única** (patrón WhatsApp Web): solo una pestaña queda activa,
   coordinada por `localStorage`, para no duplicar recálculos.
 - Overlay de progreso durante el recálculo.
+- **"+ Agregar" divisa / temporalidad** (`validar_item`): consulta a MT5
+  antes de agregar. Divisa → `symbol_info()` (+ `symbol_select` si no está
+  visible en Market Watch); si no existe, mensaje con símbolos parecidos
+  del broker (ej. `EURUSD.m`). Temporalidad → comprueba la constante
+  `TIMEFRAME_*` del paquete MetaTrader5; acepta `h4`, `4h`, `15m`, `mn1`.
+  Si MT5 no está disponible responde **503 y no agrega nada**. Al validar
+  bien, guarda la selección al instante (dispara el recálculo normal).
+- Las temporalidades agregadas a mano (ej. `M5`) se muestran junto a las
+  12 sugeridas, ordenadas de menor a mayor.
+- **Medidor de fuerza del USD**: puntaje −100..100 desde las señales S-P-N
+  y KN de `data.resultados`, ponderado por tipo de señal, canal, cercanía
+  al borde y temporalidad (peso relativo a las TFs tildadas). Bono/castigo
+  por consistencia entre pares y veredicto multi-temporalidad. Todo en el
+  cliente (`home.html`), sin tocar el backend.
+- Clic en una temporalidad de una divisa abre el gráfico con
+  `?symbol=&timeframe=` ya cargados.
 
 ### Gráfico (`chartview/`)
 - Velas + 4 canales (largo, largo inverso, corto, corto inverso) con
   % de calidad, Kalman, SMF, señales.
-- 2 pantallas con crosshair sincronizado; fecha compartida.
+- 2 pantallas; fecha compartida. **Sincronización entre pantallas**
+  (`sincronizarPantallas`): zoom/scroll/reset bidireccional en modo "Por
+  fecha" (sirve con distinta temporalidad) o "Por velas", crosshair
+  desactivable y botón ⇥ Alinear. Solo se propaga la interacción del
+  usuario, no las cargas de datos. Preferencias en `localStorage`
+  (`syncCfg`).
+- **Modo Online / Backtesting**: "Hasta" es fecha+hora (`_parse_hasta`
+  acepta ambos formatos). Reproductor ⏮ ▶/⏸ ⏭ con velocidad; se frena en
+  la hora actual; salta los fines de semana (horario Colombia) y reintenta
+  hasta hallar una vela nueva.
+- **Vela en vivo** (Modo Online): `api/vela_actual/` cada 2 s.
+- **Zoom conservado** entre recargas (se captura justo antes de `setData`,
+  relativo a la última vela; `fitContent()` solo al cambiar
+  divisa/timeframe).
+- **Precisión del eje de precio** con los `digits` reales de MT5
+  (`symbol_info`), con respaldo inferido de la magnitud si el broker no
+  los informa.
+- **Layout compacto**: barra de navegación oculta (botón ⌂ la muestra),
+  botón Filtros colapsable con contador, y Divisa/Timeframe/Cargar en la
+  barra global con 1 pantalla. Botón "Cargar más historial" siempre
+  visible.
+- Botón **Apagar/Encender todo**: alterna los checkboxes disparando su
+  propio evento `change` (no duplica lógica). "Pivot auto" queda afuera a
+  propósito (es un modo de cálculo del servidor, no un dibujo).
+- Divisa y Timeframe se alimentan de la watchlist del tablero; un
+  `?timeframe=` que no se sigue se agrega al selector en vez de ignorarse.
 - Multi-temporalidad en pestaña nueva.
 - Dibujo persistido: trendline, hline, fibo, brush, texto.
 - "Cargar más historial" (`api_velas_extra`, no recalcula canales).
@@ -247,6 +324,9 @@ otro motor.
 **`dashboard.DivisaSeguida`** — `(usuario, simbolo)` único, con `orden`.
 
 **`dashboard.TemporalidadSeguida`** — `(usuario, timeframe)` único.
+Acepta cualquier temporalidad de `_TF_MAP` (14: M1…MN1), no solo las 12
+sugeridas de `ALL_TIMEFRAMES`. `guardar_watchlist` descarta las que MT5
+no soporta.
 
 **`dashboard.TableroSnapshot`** — el resultado ya calculado.
 - `(usuario, simbolo, timeframe)` único; `datos` es `JSONField`.
@@ -294,6 +374,16 @@ Cosas que no deberían romperse:
 9. **Una sola conexión MT5 a la vez**, serializada vía `mt5_session()`.
    El paralelismo es del *cálculo*, no del *fetch*.
 10. **`mt5_export.py` no se importa como módulo** (hace `sys.exit(1)`).
+11. **Nada se agrega a la watchlist sin confirmar que existe en MT5.** Si
+    MT5 no responde, se avisa y no se agrega ("a ciegas" no).
+12. **La watchlist del tablero es la fuente única** de divisas y
+    temporalidades para ambas pantallas. El gráfico solo la lee
+    (`api/watchlist/`); nunca la modifica.
+13. **`api/validar/` y `api/watchlist/` no disparan cálculo pesado.**
+    Validar toca MT5 (rápido); watchlist del gráfico es solo SELECT.
+14. **El JSON nunca debe llevar NaN/inf**: `compute_analysis` pasa su
+    resultado por `_limpiar_nan()` (→ `null`). Un NaN hace fallar
+    `res.json()` en el navegador aunque el servidor responda 200.
 
 ---
 
@@ -343,6 +433,13 @@ Cosas que no deberían romperse:
 | Reemplazo completo de dibujos al guardar | más simple que sincronizar dibujo por dibujo | `api_dibujos_guardar` |
 | `Cache-Control: no-store` en `api_snapshot` | el polling mostraba datos viejos por caché del navegador | `dashboard/views.py` |
 | Pestaña única por `localStorage` | evitar que dos pestañas dupliquen el recálculo | `home.html` |
+| Validar contra MT5 en un endpoint aparte (`api/validar/`), que no guarda | quien guarda sigue siendo `guardar_watchlist`; el flujo de generación/Celery no cambia | `dashboard/views.py` |
+| Validar la temporalidad por la constante del paquete, no por el terminal | una temporalidad no vive en el broker; solo hace falta que exista en el API | `analysis.validar_timeframe_mt5` |
+| `TIMEFRAMES_SOPORTADOS` (de `_TF_MAP`) para validar, `ALL_TIMEFRAMES` solo para sugerir | si no, una TF agregada a mano (M5) se descartaba en silencio al calcular | `analysis.py` |
+| Gráfico se sincroniza por `storage` + foco + 60 s | `storage` solo avisa entre pestañas del mismo navegador; el sondeo es la red de seguridad | `grafico.html` |
+| Caché de velas en memoria (TTL 5 s en vivo, máx. 30 entradas) | el replay no golpea el terminal MT5 en cada tick | `analysis.fetch_mt5_candles` |
+| Vela en vivo por endpoint liviano en vez de recargar `/datos` | se ve el precio "vivir" sin costo ni parpadeo | `api/vela_actual/` |
+| Botón "apagar todo" dispara `change` en cada checkbox | reutiliza la lógica de cada indicador; uno nuevo queda cubierto solo | `grafico.html` |
 
 ---
 
@@ -371,10 +468,19 @@ Cosas que no deberían romperse:
    de un solo símbolo da muestras de ~10 casos. No concluir nada de ahí.
 9. **Dependencias sin pin** (pandas, numpy, matplotlib). Una versión
    nueva puede romper el cálculo sin aviso.
-10. **`grafico.html` tiene 3419 líneas** con todo mezclado (CSS, HTML,
-    JS de varios indicadores). Es el archivo más frágil de tocar.
+10. **`grafico.html` tiene 4350 líneas** con todo mezclado (CSS, HTML,
+    JS de varios indicadores, replay, sincronización). Es el archivo más
+    frágil de tocar. `home.html` ya va por 1354.
 11. **matplotlib se importa siempre** en `auto_channels.py` aunque la web
     nunca genere PNG — herencia del script original.
+12. **Sincronización del gráfico limitada al mismo navegador.** El aviso
+    inmediato usa `localStorage`; entre navegadores/equipos solo llega por
+    el sondeo de 60 s o al volver a la pestaña. No hay actualización en vivo
+    (WebSocket).
+13. **Símbolos con sufijo del broker** (`EURUSD.m`): `validar_item` no los
+    resuelve solo; los sugiere y hay que escribirlos exactos.
+14. **Atajo `?timeframe=`**: si la temporalidad no está en `_TF_MAP` se
+    ignora (el selector no la agrega).
 
 ---
 
@@ -393,6 +499,7 @@ Identificado en README, código y commits:
 - [ ] Tests de `core/engine/`.
 - [ ] Pinear versiones de pandas/numpy/matplotlib.
 - [ ] Evaluar partir `grafico.html` en archivos estáticos separados.
+- [ ] Decidir si `validar_item` debe aceptar sufijos del broker.
 
 ---
 
@@ -414,6 +521,15 @@ Solo lo que ayuda a entender la evolución.
 | `0bb027d`, `9bdf74f` | **S/R Fractal**: zonas por agrupación de fractales multiescala |
 | `0493d44` | Optimización (sin descripción en el mensaje) |
 | `f87138c` | **Secuencia estructural**: máquina de estados fractal→…→continuación, score 0-100, panel, alertas, `pref_secuencia` + migración `0007` |
+| `3f97f0e` | Se agrega este `AGENTS.md` |
+| `ad414e2` | Botón para apagar/encender todos los indicadores |
+| `2927fef` | **Modo Backtesting** con reproductor tipo bar replay; "Hasta" pasa a fecha+hora |
+| `6408af7` | **Vela en vivo** (`api/vela_actual/`), caché de velas MT5, precio con decimales completos |
+| `8579db2` | Fix: `_limpiar_nan()` en `compute_analysis` (NaN rompía `res.json()`); se envían `digits` de MT5 |
+| `b8a7ef7` | **Medidor de fuerza del USD** con veredicto multi-temporalidad en el tablero |
+| `c3eb736`, `2f0b467` | Zoom conservado al recargar; layout compacto (Filtros colapsable, navegación oculta); se quita el toggle de info |
+| `58300ef` | **Sincronización de zoom/scroll** entre las 2 pantallas (`sincronizarPantallas`) |
+| `0e8ec72` | **"+ Agregar" temporalidades** y validación de divisas/temporalidades contra MT5 (`api/validar/`); **watchlist compartida** tablero↔gráfico (`api/watchlist/`, sincronización en vivo); tests en `dashboard/tests.py` |
 
 **Ramas**: `master`, `feature/sr-fractal` (donde está lo más reciente),
 `optimizacion-performance`.
