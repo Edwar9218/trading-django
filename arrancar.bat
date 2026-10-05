@@ -1,11 +1,13 @@
 @echo off
 REM ============================================================
-REM  Tablero de Canales — arranque automático
-REM  Abre 3 ventanas (servidor Django, worker de Celery, beat de
-REM  Celery), cada una con el entorno virtual ya activado, y al
-REM  final abre el navegador en el tablero.
+REM  Tablero de Canales - arranque automatico
+REM  Abre PRIMERO una pantalla de bienvenida en el navegador
+REM  (cargando.html) y mientras tanto levanta las 3 ventanas
+REM  (servidor Django, worker de Celery, beat de Celery).
+REM  Cuando el servidor esta listo, la pantalla de bienvenida
+REM  entra sola al tablero.
 REM
-REM  Ubicar este archivo en la RAÍZ del proyecto (junto a
+REM  Ubicar este archivo en la RAIZ del proyecto (junto a
 REM  manage.py) y hacerle doble clic.
 REM ============================================================
 
@@ -22,20 +24,25 @@ if not exist "venv\Scripts\activate.bat" (
 echo Iniciando Tablero de Canales...
 echo.
 
+REM Pantalla de bienvenida: se abre ya, sin esperar al servidor
+if exist "%~dp0cargando.html" (
+    start "" "%~dp0cargando.html"
+) else (
+    start "" "http://localhost:8000/"
+)
+
 start "Django - servidor web" cmd /k "cd /d %~dp0 && call venv\Scripts\activate.bat && python manage.py runserver"
-timeout /t 3 /nobreak >nul
+timeout /t 1 /nobreak >nul
 
 start "Celery - worker" cmd /k "cd /d %~dp0 && call venv\Scripts\activate.bat && celery -A config worker -l info --pool=solo"
-timeout /t 3 /nobreak >nul
+timeout /t 1 /nobreak >nul
 
 start "Celery - beat" cmd /k "cd /d %~dp0 && call venv\Scripts\activate.bat && celery -A config beat -l info"
-timeout /t 4 /nobreak >nul
-
-start "" "http://localhost:8000/"
 
 echo.
-echo Listo — se abrieron 3 ventanas (servidor, worker, beat) y el navegador.
-echo Para APAGAR todo: cerra las 3 ventanas que se abrieron (o Ctrl+C en cada una).
+echo Listo - se abrieron 3 ventanas (servidor, worker, beat) y el navegador.
+echo El navegador entrara solo al tablero cuando todo este listo.
+echo Para APAGAR todo: ejecuta apagar.bat (o cerra las 3 ventanas).
 echo Esta ventana ya se puede cerrar.
 echo.
 pause

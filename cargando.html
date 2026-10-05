@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Preparando tu tablero…</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: radial-gradient(ellipse at 50% 30%, #161b29 0%, #0d1017 65%);
+    color: #d1d4dc;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    text-align: center; padding: 24px;
+  }
+  .caja { max-width: 440px; width: 100%; }
+
+  /* Velas animadas */
+  .velas { display: flex; align-items: flex-end; justify-content: center; gap: 12px; height: 90px; margin-bottom: 28px; }
+  .vela { width: 14px; position: relative; border-radius: 2px; transform-origin: bottom; animation: subir 1.6s ease-in-out infinite; }
+  .vela::before { content: ""; position: absolute; left: 50%; width: 2px; margin-left: -1px; background: inherit; top: -10px; bottom: -10px; border-radius: 1px; }
+  .vela.v { background: #26a69a; }
+  .vela.r { background: #ef5350; }
+  .vela:nth-child(1) { height: 34px; animation-delay: 0s; }
+  .vela:nth-child(2) { height: 56px; animation-delay: .15s; }
+  .vela:nth-child(3) { height: 42px; animation-delay: .3s; }
+  .vela:nth-child(4) { height: 70px; animation-delay: .45s; }
+  .vela:nth-child(5) { height: 50px; animation-delay: .6s; }
+  .vela:nth-child(6) { height: 76px; animation-delay: .75s; }
+  @keyframes subir {
+    0%, 100% { transform: scaleY(.55); opacity: .55; }
+    50%      { transform: scaleY(1);   opacity: 1; }
+  }
+
+  h1 { font-size: 22px; margin: 0 0 8px; color: #d9a441; font-weight: 700; letter-spacing: .3px; }
+  .sub { font-size: 14px; color: #848e9c; margin: 0 0 26px; }
+
+  .barra { height: 4px; background: #1e222d; border-radius: 4px; overflow: hidden; margin: 0 auto 18px; max-width: 320px; }
+  .barra span { display: block; height: 100%; width: 40%; background: linear-gradient(90deg, #2962ff, #d9a441); border-radius: 4px; animation: ir 1.4s ease-in-out infinite; }
+  @keyframes ir { 0% { transform: translateX(-100%); } 100% { transform: translateX(260%); } }
+
+  #mensaje { font-size: 13.5px; color: #b2b5be; min-height: 20px; transition: opacity .4s; }
+
+  .aviso { display: none; margin-top: 26px; padding: 14px 16px; background: #131722; border: 1px solid #2a2e39; border-radius: 10px; font-size: 13px; color: #b2b5be; }
+  .aviso a { display: inline-block; margin-top: 10px; padding: 7px 16px; border: 1px solid #2962ff; color: #2962ff; border-radius: 6px; text-decoration: none; font-size: 13px; }
+  .aviso a:hover { background: #2962ff; color: #fff; }
+
+  body.listo .barra span { width: 100%; animation: none; background: #26a69a; }
+  body.listo .vela { animation: none; transform: scaleY(1); opacity: 1; }
+</style>
+</head>
+<body>
+  <div class="caja">
+    <div class="velas" aria-hidden="true">
+      <div class="vela v"></div><div class="vela r"></div><div class="vela v"></div>
+      <div class="vela v"></div><div class="vela r"></div><div class="vela v"></div>
+    </div>
+
+    <h1>Tablero de Canales</h1>
+    <p class="sub">Estamos preparando todo para ti</p>
+
+    <div class="barra"><span></span></div>
+    <div id="mensaje">Encendiendo el tablero…</div>
+
+    <div class="aviso" id="aviso">
+      Esto está tardando un poco más de lo normal. Puedes esperar un momento más o intentar entrar ahora.<br />
+      <a href="http://localhost:8000/">Intentar entrar</a>
+    </div>
+  </div>
+
+<script>
+(function () {
+  var DESTINO = "http://localhost:8000/";
+  var mensajes = [
+    "Encendiendo el tablero…",
+    "Ordenando tus divisas…",
+    "Afinando los gráficos…",
+    "Casi listo, un momento más…"
+  ];
+  var i = 0, inicio = Date.now(), terminado = false;
+  var el = document.getElementById("mensaje");
+
+  setInterval(function () {
+    if (terminado) return;
+    el.style.opacity = 0;
+    setTimeout(function () {
+      i = (i + 1) % mensajes.length;
+      el.textContent = mensajes[i];
+      el.style.opacity = 1;
+    }, 400);
+  }, 3500);
+
+  function entrar() {
+    terminado = true;
+    document.body.classList.add("listo");
+    el.textContent = "¡Todo listo!";
+    setTimeout(function () { window.location.replace(DESTINO); }, 700);
+  }
+
+  function revisar() {
+    if (terminado) return;
+    if (Date.now() - inicio > 90000) document.getElementById("aviso").style.display = "block";
+
+    var ctrl = new AbortController();
+    var t = setTimeout(function () { ctrl.abort(); }, 3000);
+    fetch(DESTINO, { mode: "no-cors", cache: "no-store", signal: ctrl.signal })
+      .then(function () { clearTimeout(t); entrar(); })
+      .catch(function () { clearTimeout(t); setTimeout(revisar, 1500); });
+  }
+  revisar();
+})();
+</script>
+</body>
+</html>
