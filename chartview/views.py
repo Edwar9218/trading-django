@@ -130,6 +130,17 @@ def api_datos(request):
 
 
 @login_required
+def api_hora_servidor(request):
+    """Hora actual del servidor MT5 (la del eje del gráfico) y su desfase con UTC.
+    El selector \"Hasta\" del backtesting trabaja con esta hora."""
+    symbol = request.GET.get("symbol", "").strip() or None
+    try:
+        return JsonResponse(analysis.hora_servidor_mt5(symbol))
+    except Exception as e:
+        return JsonResponse({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+
+@login_required
 def api_vela_actual(request):
     """
     Endpoint liviano para el "modo online": trae SOLO la vela en

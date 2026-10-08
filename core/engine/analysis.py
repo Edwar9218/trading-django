@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -301,6 +301,99 @@ def _parse_hasta(hasta: str) -> datetime:
     return datetime.strptime(hasta, "%Y-%m-%d") + timedelta(days=1)
 
 
+def _hasta_como_hora_servidor(hasta: str) -> datetime:
+    """
+    El 'hasta' que escribe el usuario es HORA DEL SERVIDOR MT5 — la misma
+    que se ve en el eje del gráfico y en las velas.
+
+    MT5 guarda el `time` de cada vela como "segundos desde 1970" pero
+    contados con el reloj del servidor del bróker (no es UTC real). Para
+    pedir "hasta las 10:48 del servidor" hay que pasarle a MT5 las 10:48
+    marcadas como UTC. Si se le pasa un datetime SIN zona, la librería lo
+    toma como hora local de esta PC y lo corre (en Colombia, +5 h; con un
+    servidor en GMT+3 eso dejaba el backtesting 3 h por detrás del vivo).
+    """
+    return _parse_hasta(hasta).replace(tzinfo=timezone.utc)
+
+
+# ══════════════════════════════════════════════════════════
+# Hora del servidor MT5 — para que el selector "Hasta" del backtesting
+# arranque y se limite con el MISMO reloj que muestran las velas.
+# ══════════════════════════════════════════════════════════
+_SERVIDOR_SIMBOLOS_SONDA = ("EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "AUDUSD")
+_SERVIDOR_CACHE_VIGENCIA = 12 * 3600    # segundos que se recuerda una medición válida
+_servidor_offset_cache = {"segundos": None, "medido_en": 0.0}
+
+
+def _dst_eeuu(ahora_utc_naive: datetime) -> bool:
+    """¿Rige el horario de verano de EE.UU.? (2.º domingo de marzo → 1.er domingo de noviembre)"""
+    def domingo(mes, n):
+        d = datetime(ahora_utc_naive.year, mes, 1)
+        d += timedelta(days=(6 - d.weekday()) % 7)
+        return d + timedelta(weeks=n - 1)
+    inicio = domingo(3, 2).replace(hour=7)    # 02:00 EST
+    fin = domingo(11, 1).replace(hour=6)      # 02:00 EDT
+    return inicio <= ahora_utc_naive < fin
+
+
+def hora_servidor_mt5(symbol=None):
+    """
+    Hora actual del servidor MT5 y su desfase respecto de UTC.
+
+    Se mide con el tick más reciente de varios símbolos líquidos (con el
+    mercado abierto, el tick es de hace segundos). Con el mercado cerrado
+    el tick es viejo y no sirve para medir, así que se recurre, en orden,
+    a: la última medición válida → MT5_SERVER_UTC_OFFSET_HORAS (variable
+    de entorno / .env) → una estimación para brókers con cierre alineado a
+    Nueva York (GMT+3 con horario de verano de EE.UU., GMT+2 sin él).
+
+    Devuelve {"hora": "YYYY-MM-DDTHH:MM", "offset_segundos", "offset_horas",
+    "fuente": "tick" | "cache" | "configurado" | "estimado"}.
+    """
+    ahora_utc = datetime.now(timezone.utc)
+    offset, fuente = None, None
+
+    if mt5 is not None:
+        try:
+            with mt5_session():
+                candidatos = ([symbol.upper()] if symbol else []) + list(_SERVIDOR_SIMBOLOS_SONDA)
+                mas_reciente = None
+                for s in candidatos:
+                    tick = mt5.symbol_info_tick(s)
+                    if tick is not None and tick.time and (mas_reciente is None or tick.time > mas_reciente):
+                        mas_reciente = tick.time
+                if mas_reciente is not None:
+                    crudo = mas_reciente - ahora_utc.timestamp()
+                    redondeado = round(crudo / 1800) * 1800     # los husos son múltiplos de 30 min
+                    # Válido solo si el tick es fresco: cae casi justo en un huso real.
+                    if abs(crudo - redondeado) <= 180 and -12 * 3600 <= redondeado <= 14 * 3600:
+                        offset, fuente = int(redondeado), "tick"
+        except Exception as e:                                   # noqa: BLE001
+            logger.warning("[hora_servidor_mt5] no se pudo medir contra MT5: %s", e)
+
+    ahora_ts = ahora_utc.timestamp()
+    if offset is not None:
+        previo = _servidor_offset_cache
+        # Un tick viejo solo puede dar un desfase MENOR al real, nunca mayor:
+        # dentro de la vigencia se queda con el más alto.
+        if previo["segundos"] is not None and ahora_ts - previo["medido_en"] < _SERVIDOR_CACHE_VIGENCIA:
+            offset = max(offset, previo["segundos"])
+        _servidor_offset_cache.update(segundos=offset, medido_en=ahora_ts)
+    elif _servidor_offset_cache["segundos"] is not None:
+        offset, fuente = _servidor_offset_cache["segundos"], "cache"
+    else:
+        configurado = os.environ.get("MT5_SERVER_UTC_OFFSET_HORAS", "").strip()
+        try:
+            offset, fuente = int(float(configurado) * 3600), "configurado"
+        except ValueError:
+            offset = (3 if _dst_eeuu(ahora_utc.replace(tzinfo=None)) else 2) * 3600
+            fuente = "estimado"
+
+    servidor = ahora_utc + timedelta(seconds=offset)
+    return {"hora": servidor.strftime("%Y-%m-%dT%H:%M"), "offset_segundos": offset,
+            "offset_horas": offset / 3600, "fuente": fuente}
+
+
 # ══════════════════════════════════════════════════════════
 # Caché en memoria del rango de velas ya traído de MT5, por (symbol,
 # timeframe). Pensada específicamente para el replay/backtesting: cada
@@ -440,7 +533,8 @@ def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
         bars_per_day = _BARS_PER_DAY.get(timeframe.upper(), 6)
 
         range_reaches_today = hasta is None
-        date_to = _parse_hasta(hasta) if hasta else (datetime.now() + timedelta(days=1))
+        date_to = (_hasta_como_hora_servidor(hasta) if hasta
+                   else datetime.now(timezone.utc) + timedelta(days=2))
         logger.info("[fetch_mt5_candles] %s %s — hasta recibido=%r → date_to=%s (en_vivo=%s)",
                     symbol, timeframe, hasta, date_to, range_reaches_today)
 
@@ -482,7 +576,8 @@ def fetch_mt5_candles(symbol: str, timeframe: str, hasta=None):
 
         logger.info("[fetch_mt5_candles] %s %s — MT5 devolvió %d velas, de %s a %s",
                     symbol, timeframe, len(rates),
-                    datetime.fromtimestamp(rates[0]["time"]), datetime.fromtimestamp(rates[-1]["time"]))
+                    datetime.fromtimestamp(rates[0]["time"], timezone.utc),
+                    datetime.fromtimestamp(rates[-1]["time"], timezone.utc))
 
         raw = pd.DataFrame(rates)
         raw["datetime"] = pd.to_datetime(raw["time"], unit="s")
@@ -535,7 +630,7 @@ def fetch_mt5_older_candles(symbol: str, timeframe: str, antes_de_ts: int, canti
                     break
                 time.sleep(0.2)
 
-        date_to = datetime.fromtimestamp(antes_de_ts)   # exclusivo: no repetir la vela que ya tenían
+        date_to = datetime.fromtimestamp(antes_de_ts, timezone.utc)   # exclusivo: no repetir la vela que ya tenían (hora del servidor marcada como UTC)
         bars_per_day = _BARS_PER_DAY.get(timeframe.upper(), 6)
         days_back = max(int(cantidad * 1.5 / max(bars_per_day, 0.01)), 5)
         max_days_back = 365 * 20

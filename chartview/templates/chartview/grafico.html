@@ -61,6 +61,19 @@
       min-width: 190px;
     }
     #fecha-global:focus { border-color: #2962ff; }
+    #selector-fecha-hora { display: flex; align-items: center; gap: 4px; }
+    #selector-fecha-hora input, #selector-fecha-hora select {
+      background: #2a2e39;
+      border: 1px solid #363c4e;
+      border-radius: 6px;
+      color: #d1d4dc;
+      font-size: 13px;
+      padding: 5px 7px;
+      outline: none;
+      color-scheme: dark;
+    }
+    #selector-fecha-hora input:focus, #selector-fecha-hora select:focus { border-color: #2962ff; }
+    #selector-fecha-hora .dos-puntos { color: #848e9c; }
 
     #modo-grafico-toggle {
       display: flex;
@@ -712,7 +725,8 @@
 
   /* Barra global: más baja */
   #global-bar { padding: 4px 12px; gap: 8px; }
-  #fecha-global { padding: 3px 7px; font-size: 12px; min-width: 165px; }
+  #selector-fecha-hora input, #selector-fecha-hora select { padding: 3px 5px; font-size: 12px; }
+  #hora-servidor-info { font-size: 11px; color: #848e9c; white-space: nowrap; }
   .modo-btn { padding: 3px 10px; }
   #btn-split, #btn-multitf, #btn-enfoque { padding: 3px 10px; }
   #reproductor button { width: 28px; height: 24px; }
@@ -803,8 +817,18 @@
     <button id="btn-modo-backtesting" class="modo-btn" type="button" title="Elegí una fecha/hora pasada y repasá el gráfico vela a vela">⏱ Backtesting</button>
   </div>
   <div id="controles-backtesting">
-    <label for="fecha-global">📅 Hasta:</label>
-    <input id="fecha-global" type="datetime-local" step="60" />
+    <label for="fecha-dia" title="Es la hora del servidor de MT5: la misma que se ve en el eje del gráfico y en las velas, no la de tu computador.">📅 Hasta (hora MT5):</label>
+    <!-- El valor real vive en #fecha-global ("AAAA-MM-DDTHH:MM", hora del servidor MT5), oculto:
+         todo el código lo sigue leyendo/escribiendo igual. Los 3 controles visibles son solo la
+         "cara": calendario para el día y hora/minuto en formato 24 h (sin a. m./p. m.). -->
+    <input id="fecha-global" type="hidden" />
+    <span id="selector-fecha-hora">
+      <input id="fecha-dia" type="date" title="Día (calendario)" />
+      <select id="fecha-hora" title="Hora (formato 24 h)"></select>
+      <span class="dos-puntos">:</span>
+      <select id="fecha-minuto" title="Minuto"></select>
+    </span>
+    <span id="hora-servidor-info" title="Hora del servidor de MT5"></span>
     <div id="reproductor">
       <button id="btn-paso-atras" type="button" title="Retroceder 1 vela">⏮</button>
       <button id="btn-play-pause" type="button" title="Reproducir (avanza solo, vela a vela)">▶</button>
@@ -1013,6 +1037,7 @@
 // ahora todo vive bajo el mismo origen que esta página).
 const API = {
   datos: "{% url 'chartview:api_datos' %}",
+  horaServidor: "{% url 'chartview:api_hora_servidor' %}",
   vela_actual: "{% url 'chartview:api_vela_actual' %}",
   velas_extra: "{% url 'chartview:api_velas_extra' %}",
   config: "{% url 'chartview:api_config' %}",
@@ -3752,6 +3777,45 @@ function actualizarLinkTablero() {
 // "hasta" solo, vela a vela, y recarga como si el mercado estuviera
 // corriendo en vivo hasta ese instante.
 // ══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+// Selector "Hasta" en formato 24 h. El <input type="datetime-local">
+// nativo muestra a. m./p. m. según la configuración regional de Windows
+// y no se puede forzar a 24 h, así que la "cara" son 3 controles (día,
+// hora 00-23, minuto 00-59) y el valor sigue guardado en #fecha-global
+// con el formato de siempre. Se intercepta .value para que escribirlo
+// desde el código (setFechaGlobal, atajos, modo Online…) actualice los
+// controles, y cambiar un control dispare "change" en #fecha-global.
+// ══════════════════════════════════════════════════════════
+(function iniciarSelectorFechaHora24h() {
+  const oculto = document.getElementById("fecha-global");
+  const dia = document.getElementById("fecha-dia");
+  const selHora = document.getElementById("fecha-hora");
+  const selMin = document.getElementById("fecha-minuto");
+  const dos = (n) => String(n).padStart(2, "0");
+  for (let h = 0; h < 24; h++) selHora.add(new Option(dos(h), dos(h)));
+  for (let m = 0; m < 60; m++) selMin.add(new Option(dos(m), dos(m)));
+
+  const nativo = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+  function pintar(v) {
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v || "")) {
+      dia.value = v.slice(0, 10); selHora.value = v.slice(11, 13); selMin.value = v.slice(14, 16);
+    } else {
+      dia.value = ""; selHora.value = "00"; selMin.value = "00";
+    }
+  }
+  Object.defineProperty(oculto, "value", {
+    configurable: true,
+    get() { return nativo.get.call(oculto); },
+    set(v) { nativo.set.call(oculto, v); pintar(v); },
+  });
+  function desdeControles() {
+    nativo.set.call(oculto, dia.value ? `${dia.value}T${selHora.value}:${selMin.value}` : "");
+    oculto.dispatchEvent(new Event("change"));
+  }
+  [dia, selHora, selMin].forEach((el) => el.addEventListener("change", desdeControles));
+  pintar("");
+})();
+
 const TF_MINUTOS = {
   M1: 1, M5: 5, M15: 15, M30: 30,
   H1: 60, H2: 120, H3: 180, H4: 240, H6: 360, H8: 480, H12: 720,
@@ -3772,27 +3836,74 @@ function pasoEnMinutos() {
   return TF_MINUTOS[tf] || 60;
 }
 
+// ══════════════════════════════════════════════════════════
+// Hora del servidor MT5.
+// El selector "Hasta" NO está en la hora de este computador: está en la
+// hora del servidor de MT5 — la misma del eje del gráfico y de las
+// velas. Se le pregunta al servidor su hora actual / desfase con UTC, y
+// de ahí sale el "ahora" del backtesting (valor inicial del selector y
+// tope del reproductor). Los objetos Date que usa el reproductor son
+// solo contenedores de "números de reloj" (año, mes, día, hora, minuto):
+// esos números son los del servidor MT5, no los del computador.
+// ══════════════════════════════════════════════════════════
+let servidorOffsetMs = null;      // desfase servidor-UTC en ms (null = todavía no se sabe)
+let servidorOffsetFuente = null;  // "tick" | "cache" | "configurado" | "estimado"
+
+async function cargarHoraServidor() {
+  try {
+    const sym = (typeof panel1 !== "undefined" && panel1) ? panel1.getSymbolActual() : "";
+    const res = await fetch(`${API.horaServidor}?symbol=${encodeURIComponent(sym || "")}`, {
+      signal: AbortSignal.timeout(15000)
+    });
+    const data = await res.json();
+    if (!res.ok || typeof data.offset_segundos !== "number") throw new Error(data.error || "respuesta inválida");
+    servidorOffsetMs = data.offset_segundos * 1000;
+    servidorOffsetFuente = data.fuente;
+    const h = data.offset_horas;
+    const info = document.getElementById("hora-servidor-info");
+    if (info) {
+      info.textContent = `GMT${h >= 0 ? "+" : ""}${Number.isInteger(h) ? h : h.toFixed(1)}${data.fuente === "estimado" ? " (estimado)" : ""}`;
+      info.title = `Hora del servidor de MT5 (${data.fuente}). Ahora allá son las ${data.hora.slice(11)}.`;
+    }
+    console.log("[hora MT5] servidor:", data);
+  } catch (e) {
+    console.warn("[hora MT5] no se pudo leer la hora del servidor, se usa la del computador:", e);
+  }
+}
+
+// "Ahora" según el reloj del servidor MT5, como Date cuyos números de
+// reloj (getHours(), getDate()…) son los del servidor. Si todavía no se
+// pudo leer la hora del servidor, cae a la del computador.
+function ahoraServidor() {
+  if (servidorOffsetMs === null) return new Date();
+  const d = new Date(Date.now() + servidorOffsetMs);
+  return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
+                  d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds());
+}
+
 function fechaGlobalComoDate() {
   const val = document.getElementById("fecha-global").value;
-  // El input datetime-local no trae zona horaria — se interpreta en
-  // hora LOCAL del navegador, la misma que el usuario ve y tipea, así
-  // el paso "+1 vela" no se corre por husos horarios.
-  return val ? new Date(val) : new Date();
+  // El input datetime-local no trae zona horaria: sus números son hora
+  // del SERVIDOR MT5 (ver arriba). Se arma el Date con esos mismos
+  // números, sin conversiones, para que el paso "+1 vela" no se corra.
+  return val ? new Date(val) : ahoraServidor();
 }
 
 // ══════════════════════════════════════════════════════════
-// Fin de semana / mercado cerrado (horario Colombia).
-// El forex cierra el viernes al final de la tarde y vuelve a abrir el
-// domingo también al final de la tarde — en horario Colombia queda
-// entre las 16:00 y las 17:00 según la época del año (por el cambio de
-// horario en EE.UU., que corre el cierre/apertura real 1 hora). Se usan
-// las 17:00 como límite: es la opción más conservadora — en el peor
-// caso el reproductor se detiene o salta hasta 1 hora antes/después de
-// que el mercado haya abierto/cerrado en verdad, nunca "salta" horas
-// donde el mercado sigue operando. Si en la práctica hace falta más
-// precisión, se ajusta acá.
-const MERCADO_CIERRA_VIERNES_HORA = 17;
-const MERCADO_ABRE_DOMINGO_HORA = 17;
+// Fin de semana / mercado cerrado (en HORA DEL SERVIDOR MT5).
+// Los brókers de MT5 alinean el día al cierre de Nueva York: la
+// medianoche del servidor es las 17:00 de Nueva York. El forex cierra el
+// viernes a esa hora (= sábado 00:00 del servidor) y reabre el domingo a
+// las 17:00 de Nueva York (= lunes 00:00 del servidor; algunos brókers
+// muestran las primeras velas desde el domingo ~23:00). Esto vale igual
+// con servidor en GMT+2 o GMT+3, porque el horario de verano mueve el
+// servidor y Nueva York a la vez.
+// Se usa el domingo 23:00 como apertura: en el peor caso el reproductor
+// se detiene o salta hasta 1 hora antes de que el mercado abra de
+// verdad, nunca "salta" horas donde el mercado sigue operando. Si el
+// bróker abre distinto, se ajusta acá.
+const MERCADO_CIERRA_VIERNES_HORA = 24;   // 24 = sábado 00:00 (el viernes se opera completo)
+const MERCADO_ABRE_DOMINGO_HORA = 23;
 
 function mercadoCerrado(fecha) {
   const dia = fecha.getDay();               // 0=domingo … 5=viernes, 6=sábado
@@ -3836,7 +3947,7 @@ function setFechaGlobal(date) {
 async function avanzarPasoYCargar(direccion) {
   const ultimaVelaAntes = panel1.getUltimaVela();
   const fecha = fechaGlobalComoDate();
-  const ahora = new Date();
+  const ahora = ahoraServidor();
   let llegoAlPresente = false;
   const MAX_SALTOS = 60; // tope de seguridad para no colgar el navegador si nunca aparece vela nueva
 
@@ -3887,7 +3998,7 @@ async function avanzarPasoYCargar(direccion) {
 // tiene sentido seguir avanzando (ni automática ni manualmente) más
 // allá del presente.
 function actualizarLimiteReproductor() {
-  const alPresente = fechaGlobalComoDate() >= new Date();
+  const alPresente = fechaGlobalComoDate() >= ahoraServidor();
   document.getElementById("btn-play-pause").disabled = alPresente;
   document.getElementById("btn-paso-adelante").disabled = alPresente;
 }
@@ -4024,14 +4135,16 @@ function activarModoOnline(opciones = {}) {
   iniciarVelaViva();
 }
 
-function activarModoBacktesting(opciones = {}) {
+async function activarModoBacktesting(opciones = {}) {
   const { recargar = true } = opciones;
   detenerVelaViva();
   modoGrafico = "backtesting";
   // Si no había fecha puesta (vino de Modo Online), arranca en "ahora"
-  // — desde ahí se puede retroceder con ⏮ o tipear una fecha/hora pasada.
+  // según el reloj del servidor MT5 — desde ahí se puede retroceder con
+  // ⏮ o tipear una fecha/hora pasada (también en hora del servidor).
   if (!document.getElementById("fecha-global").value) {
-    setFechaGlobal(new Date());
+    if (servidorOffsetMs === null) await cargarHoraServidor();
+    setFechaGlobal(ahoraServidor());
   } else {
     actualizarLimiteReproductor();
   }
@@ -4068,9 +4181,13 @@ window.addEventListener("load", () => {
   if (atajoSymbol) panel1.setSymbol(atajoSymbol.toUpperCase());
   if (atajoTimeframe) panel1.setTimeframe(atajoTimeframe);
 
+  cargarHoraServidor();
+  setInterval(cargarHoraServidor, 10 * 60 * 1000);   // por si el servidor cambia de horario de verano
+
   if (arrancaEnBacktesting) {
-    activarModoBacktesting({ recargar: false });
-    if (atajoSymbol) panel1.cargarDatos();
+    activarModoBacktesting({ recargar: false }).then(() => {
+      if (atajoSymbol) panel1.cargarDatos();
+    });
   } else {
     activarModoOnline({ recargar: false });
     if (atajoSymbol) panel1.cargarDatos();
