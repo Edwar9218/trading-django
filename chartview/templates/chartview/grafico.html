@@ -3450,6 +3450,19 @@ function crearPanel(rootEl, opciones = {}) {
       guardarDibujosServidor();
     }, true);
 
+    // Captura rápida (solo Backtesting): clic en una vela + Enter = ir a esa
+    // fecha. Todo vive en activarCapturaRapida(); acá solo se le entregan
+    // lecturas del estado de este panel, no se toca nada de lo existente.
+    activarCapturaRapida({
+      chart, candleSerie, chartPlot,
+      getCandles: () => loadedCandles,
+      getSymbol: () => symbolActual,
+      getTf: () => timeframeActual,
+      getActiveTool: () => activeTool,
+      hayDibujoBajoCursor: () => !!hoverMatch,
+      estaCargando: () => cargandoDatos,
+    });
+
     // Cualquier cambio de tamaño del contenedor (ventana, split screen,
     // que aparezca un botón, lo que sea) re-sincroniza el chart.
     new ResizeObserver(() => {
@@ -3744,6 +3757,154 @@ function crearPanel(rootEl, opciones = {}) {
     actualizarVelaViva,
   };
 }
+
+// ── Captura rápida: inicio ─────────────────────────────────
+// Solo en Modo Backtesting: se pasea el mouse por el gráfico (etiqueta con
+// la fecha/hora de la vela), un clic limpio sobre una vela la deja
+// seleccionada y Enter pone esa fecha en el selector "Hasta" y carga, igual
+// que si se hubiera tipeado a mano. Esc cancela.
+//
+// Decisiones:
+//  - La hora sale del `time` de la vela tal como llega (apertura real, sin
+//    redondear): sirve igual en M1, M5, H4, D1… Ese `time` ya viene en el
+//    reloj del servidor MT5 (ver _hasta_como_hora_servidor), que es EL MISMO
+//    reloj del selector "Hasta", así que se lee con getUTC* y sin ninguna
+//    conversión de zona: lo que muestra la etiqueta es lo que se escribe.
+//  - Para "cargar" se hace lo mismo que hace el selector al cambiar a mano:
+//    se escribe #fecha-global y se dispara su "change", que ya recarga los
+//    paneles (recargarPaneles → cargarDatos). No se crea ninguna carga nueva.
+//  - Estado separado: `bajoCursor` (vela bajo el mouse, cambia siempre) y
+//    `seleccion` (vela fijada por un clic, solo cambia con otro clic/Esc/Enter).
+const CAPTURA_UMBRAL_ARRASTRE_PX = 4;
+let capturaPanelConSeleccion = null;   // solo un panel a la vez tiene vela seleccionada
+
+function activarCapturaRapida(p) {
+  const dos = n => String(n).padStart(2, "0");
+  function fechaVela(t) {
+    const d = new Date(t * 1000);
+    const Y = d.getUTCFullYear(), M = dos(d.getUTCMonth() + 1), D = dos(d.getUTCDate());
+    const h = dos(d.getUTCHours()), m = dos(d.getUTCMinutes());
+    return { texto: `${D}/${M}/${Y} ${h}:${m}`, valor: `${Y}-${M}-${D}T${h}:${m}` };
+  }
+  const enBacktesting = () => modoGrafico === "backtesting";
+  const activa = () => enBacktesting() && !reproduciendo;
+
+  function existeVela(t) {
+    const v = p.getCandles();
+    let lo = 0, hi = v.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (v[mid].time === t) return true;
+      if (v[mid].time < t) lo = mid + 1; else hi = mid - 1;
+    }
+    return false;
+  }
+
+  // Elementos visuales: nunca capturan el mouse (pointer-events:none).
+  const base = "position:absolute;pointer-events:none;display:none;z-index:5;";
+  const etiqueta = document.createElement("div");
+  etiqueta.style.cssText = base + "top:6px;background:#2a2e39;color:#d1d4dc;border:1px solid #434651;border-radius:3px;padding:2px 6px;font:11px/1.3 sans-serif;white-space:nowrap;";
+  const marca = document.createElement("div");
+  marca.style.cssText = base + "top:0;bottom:0;width:2px;margin-left:-1px;background:#ffd54f;opacity:.9;";
+  const aviso = document.createElement("div");
+  aviso.style.cssText = base + "bottom:34px;left:50%;transform:translateX(-50%);background:rgba(19,23,34,.94);color:#d1d4dc;border:1px solid #f7931a;border-radius:4px;padding:4px 10px;font:12px/1.3 sans-serif;white-space:nowrap;";
+  p.chartPlot.append(etiqueta, marca, aviso);
+
+  let bajoCursor = null;    // time (s) de la vela bajo el mouse, o null
+  let seleccion = null;     // { time, symbol, tf } fijada por un clic
+  let presionado = null;    // { x, y } del mousedown en curso
+
+  const ocultarEtiqueta = () => { etiqueta.style.display = "none"; };
+
+  function pintarSeleccion() {
+    if (!seleccion) { marca.style.display = aviso.style.display = "none"; return; }
+    const x = p.chart.timeScale().timeToCoordinate(seleccion.time);
+    if (x === null || x === undefined) marca.style.display = "none";
+    else { marca.style.left = x + "px"; marca.style.display = "block"; }
+    aviso.textContent = `Vela ${fechaVela(seleccion.time).texto} seleccionada. Enter para usar, Esc para cancelar`;
+    aviso.style.display = "block";
+  }
+  function limpiar() {
+    seleccion = null;
+    if (capturaPanelConSeleccion === api) capturaPanelConSeleccion = null;
+    pintarSeleccion();
+  }
+  const api = { limpiar };
+
+  // Cada vez que cambia la vista (carga de datos, zoom, paneo, replay) se
+  // revalida: si cambió divisa/temporalidad, se salió de Backtesting, corre
+  // el replay o la vela ya no está cargada, la selección se descarta para no
+  // pegar una fecha que ya no corresponde a lo que se ve.
+  p.chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+    if (!seleccion) return;
+    if (!activa() || seleccion.symbol !== p.getSymbol() || seleccion.tf !== p.getTf() || !existeVela(seleccion.time)) {
+      limpiar();
+    } else {
+      pintarSeleccion();
+    }
+  });
+
+  // 1) Vela bajo el cursor + etiqueta.
+  p.chart.subscribeCrosshairMove(param => {
+    bajoCursor = null;
+    if (!activa() || !param.point || typeof param.time !== "number" || !param.seriesData.get(p.candleSerie)) {
+      ocultarEtiqueta();
+      return;
+    }
+    bajoCursor = param.time;
+    if (presionado) { ocultarEtiqueta(); return; }   // clic/arrastre en curso
+    const x = p.chart.timeScale().timeToCoordinate(param.time);
+    if (x === null || x === undefined) { ocultarEtiqueta(); return; }
+    etiqueta.textContent = fechaVela(param.time).texto;
+    etiqueta.style.display = "block";
+    const w = etiqueta.offsetWidth;
+    etiqueta.style.left = ((x + 8 + w > p.chartPlot.clientWidth - 70) ? x - w - 8 : x + 8) + "px";
+  });
+  p.chartPlot.addEventListener("mouseleave", ocultarEtiqueta);
+  p.chartPlot.addEventListener("wheel", ocultarEtiqueta, { passive: true });   // el zoom mueve las velas bajo el mouse
+
+  // 2) Clic limpio (se distingue del arrastre por la distancia recorrida).
+  // Solo se escucha, nunca se frena ni se cancela nada: el paneo del gráfico
+  // queda exactamente igual.
+  p.chartPlot.addEventListener("mousedown", e => {
+    presionado = (e.button === 0) ? { x: e.clientX, y: e.clientY } : null;
+  });
+  window.addEventListener("mouseup", e => {
+    const d = presionado;
+    presionado = null;
+    if (!d || e.button !== 0 || !activa()) return;
+    if (!p.chartPlot.contains(e.target)) return;                        // soltó fuera del gráfico
+    if (e.detail > 1) return;                                           // doble clic: no es selección
+    if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > CAPTURA_UMBRAL_ARRASTRE_PX) return;   // arrastre
+    if (p.getActiveTool() !== "cursor" || p.hayDibujoBajoCursor()) return;   // dibujando o moviendo un dibujo
+    if (bajoCursor === null) return;                                    // clic donde no hay vela
+    if (capturaPanelConSeleccion && capturaPanelConSeleccion !== api) capturaPanelConSeleccion.limpiar();
+    seleccion = { time: bajoCursor, symbol: p.getSymbol(), tf: p.getTf() };
+    capturaPanelConSeleccion = api;
+    pintarSeleccion();
+  });
+
+  // 3) Enter confirma, Esc cancela. Enter solo actúa con una vela
+  // seleccionada y con el foco en el gráfico (no en un campo/selector/botón,
+  // donde Enter sigue haciendo lo de siempre).
+  document.addEventListener("keydown", e => {
+    if (!seleccion) return;
+    if (e.key === "Escape") { limpiar(); return; }
+    if (e.key !== "Enter" || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+    const el = document.activeElement;
+    const tag = el && el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || tag === "A" || (el && el.isContentEditable)) return;
+    if (!activa() || p.estaCargando()) return;
+    if (seleccion.symbol !== p.getSymbol() || seleccion.tf !== p.getTf() || !existeVela(seleccion.time)) { limpiar(); return; }
+    e.preventDefault();
+    const valor = fechaVela(seleccion.time).valor;
+    limpiar();
+    const campo = document.getElementById("fecha-global");
+    campo.value = valor;                              // actualiza día/hora/minuto visibles
+    campo.dispatchEvent(new Event("change"));         // mismo camino que tipear la fecha: pausa, y recarga los paneles
+  });
+}
+// ── Captura rápida: fin ────────────────────────────────────
 
 // ══════════════════════════════════════════════════════════
 // Orquestación: fecha compartida, split screen, estado del servidor
