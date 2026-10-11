@@ -4,7 +4,7 @@
 > Basado en el código, la configuración y el historial de git reales.
 > Lo que no pudo determinarse está marcado como **No determinado**.
 >
-> Última sincronización: commit `0e8ec72` (rama `feature/sr-fractal`).
+> Última sincronización: commit `458b5ac` (rama `feature/sr-fractal`).
 
 ---
 
@@ -142,6 +142,7 @@ chartview/       gráfico detallado + APIs + indicadores JS
 drawings/        persistencia de dibujos
 templates/       base.html
 broker/          cola de Celery en disco (in/out/processed, gitignored)
+cargando.html    pantalla de bienvenida que abre arrancar.bat (ver §5)
 ```
 
 `core/` y `chartview/` no tienen migraciones propias con modelos:
@@ -257,9 +258,35 @@ Gráfico: sincronizarWatchlist() → GET /grafico/api/watchlist/ (solo SELECT)
   usuario, no las cargas de datos. Preferencias en `localStorage`
   (`syncCfg`).
 - **Modo Online / Backtesting**: "Hasta" es fecha+hora (`_parse_hasta`
-  acepta ambos formatos). Reproductor ⏮ ▶/⏸ ⏭ con velocidad; se frena en
-  la hora actual; salta los fines de semana (horario Colombia) y reintenta
+  acepta ambos formatos) y está en **hora del servidor MT5**, no en la del
+  computador (ver regla 15). El selector son 3 controles en 24 h (día,
+  hora, minuto) que escriben en el input oculto `#fecha-global`, que sigue
+  siendo la fuente de verdad. Reproductor ⏮ ▶/⏸ ⏭ con velocidad; se frena
+  en la hora actual del servidor; salta los fines de semana (cierre
+  viernes 24:00, apertura domingo 23:00, en hora del servidor) y reintenta
   hasta hallar una vela nueva.
+- **Hora del servidor MT5** (`api/hora_servidor/` → `hora_servidor_mt5()`):
+  mide el desfase con UTC usando el tick más reciente de varios símbolos
+  líquidos. Con el mercado cerrado el tick es viejo y no sirve, así que
+  cae en orden a: última medición válida → `MT5_SERVER_UTC_OFFSET_HORAS`
+  del `.env` → estimación (GMT+3 con horario de verano de EE.UU., GMT+2
+  sin él). El campo `fuente` (`tick`/`cache`/`configurado`/`estimado`) se
+  muestra junto al selector como `GMT+3`, con "(estimado)" si corresponde.
+- **Captura rápida de vela** (solo Backtesting): paseando el mouse, una
+  etiqueta `dd/mm/aaaa HH:mm` muestra la vela bajo el cursor; un clic
+  limpio (movimiento ≤ 4 px, no doble clic) la deja seleccionada (línea
+  amarilla + aviso); **Enter** escribe su hora de apertura en `#fecha-global`
+  y dispara su `change`, que ya recarga los paneles; **Esc** cancela. Se
+  ignora con el replay corriendo, en Modo Online, con una herramienta de
+  dibujo activa, al clicar un dibujo o con el foco en un campo/selector/
+  botón. La selección se descarta si cambia divisa/temporalidad o si la
+  vela ya no está cargada. Código: `activarCapturaRapida()` en
+  `grafico.html` (bloque entre `// ── Captura rápida: inicio` y `fin`),
+  con una sola llamada desde `init()` de `crearPanel`.
+- **Pantalla de bienvenida al arrancar**: `arrancar.bat` abre
+  `cargando.html` de inmediato y levanta servidor, worker y beat; la
+  página sondea `http://localhost:8000/` y entra sola al tablero cuando el
+  servidor responde. Si no existe, el `.bat` abre el tablero directo.
 - **Vela en vivo** (Modo Online): `api/vela_actual/` cada 2 s.
 - **Zoom conservado** entre recargas (se captura justo antes de `setData`,
   relativo a la última vela; `fitContent()` solo al cambiar
@@ -384,6 +411,19 @@ Cosas que no deberían romperse:
 14. **El JSON nunca debe llevar NaN/inf**: `compute_analysis` pasa su
     resultado por `_limpiar_nan()` (→ `null`). Un NaN hace fallar
     `res.json()` en el navegador aunque el servidor responda 200.
+15. **El `time` de cada vela y el selector "Hasta" están en la MISMA hora:
+    la del servidor MT5** (no UTC real, no la del computador). MT5 guarda
+    `time` como segundos desde 1970 contados con el reloj del bróker, y
+    `_hasta_como_hora_servidor()` marca ese "hasta" como UTC a propósito
+    para que `copy_rates_range` lo entienda igual. En el navegador, un
+    `time` de vela se lee con `getUTC*` y **sin conversión de zona**; las
+    fechas del selector se arman con esos mismos números. Convertir a otra
+    zona desfasa la carga.
+16. **`#fecha-global` es la fuente de verdad del "Hasta"** (input oculto,
+    interceptado para que escribirlo desde código actualice los 3 controles
+    visibles). Quien quiera "ir a una fecha" escribe ahí y dispara
+    `change`; ese evento ya recarga los paneles. No crear otro camino de
+    carga.
 
 ---
 
@@ -440,6 +480,12 @@ Cosas que no deberían romperse:
 | Caché de velas en memoria (TTL 5 s en vivo, máx. 30 entradas) | el replay no golpea el terminal MT5 en cada tick | `analysis.fetch_mt5_candles` |
 | Vela en vivo por endpoint liviano en vez de recargar `/datos` | se ve el precio "vivir" sin costo ni parpadeo | `api/vela_actual/` |
 | Botón "apagar todo" dispara `change` en cada checkbox | reutiliza la lógica de cada indicador; uno nuevo queda cubierto solo | `grafico.html` |
+| "Hasta" en hora del servidor MT5, medida con ticks (`hora_servidor_mt5`) | pasar un datetime sin zona hacía que la librería lo tomara como hora local de la PC y desfasaba el backtesting (3 h en un servidor GMT+3) | `analysis.py`, `grafico.html` |
+| Selector "Hasta" en 24 h con 3 controles sobre un input oculto | el `datetime-local` nativo muestra a. m./p. m. según Windows y no se puede forzar | `grafico.html` |
+| Captura rápida: escribir `#fecha-global` + `change` en vez de llamar a `cargarDatos` | el `change` ya pausa el replay y recarga todos los paneles; llamar a `cargarDatos` cargaría solo uno y duplicaría lógica | `grafico.html` |
+| Captura rápida sin checkbox ni interruptor | pedido expreso del dueño: no llenar el gráfico de checkboxes; Enter siempre pega y carga | `grafico.html` |
+| Captura rápida solo escucha el mouse, nunca frena eventos ni usa el canvas de dibujo | el arrastre/zoom/paneo y los dibujos quedan exactamente como antes; la marca y la etiqueta son `div` con `pointer-events:none` | `grafico.html` |
+| `arrancar.bat` abre `cargando.html` antes de levantar nada | el navegador muestra algo de inmediato y entra solo cuando el servidor responde | `arrancar.bat`, `cargando.html` |
 
 ---
 
@@ -468,7 +514,7 @@ Cosas que no deberían romperse:
    de un solo símbolo da muestras de ~10 casos. No concluir nada de ahí.
 9. **Dependencias sin pin** (pandas, numpy, matplotlib). Una versión
    nueva puede romper el cálculo sin aviso.
-10. **`grafico.html` tiene 4350 líneas** con todo mezclado (CSS, HTML,
+10. **`grafico.html` tiene ~4630 líneas** con todo mezclado (CSS, HTML,
     JS de varios indicadores, replay, sincronización). Es el archivo más
     frágil de tocar. `home.html` ya va por 1354.
 11. **matplotlib se importa siempre** en `auto_channels.py` aunque la web
@@ -530,6 +576,9 @@ Solo lo que ayuda a entender la evolución.
 | `c3eb736`, `2f0b467` | Zoom conservado al recargar; layout compacto (Filtros colapsable, navegación oculta); se quita el toggle de info |
 | `58300ef` | **Sincronización de zoom/scroll** entre las 2 pantallas (`sincronizarPantallas`) |
 | `0e8ec72` | **"+ Agregar" temporalidades** y validación de divisas/temporalidades contra MT5 (`api/validar/`); **watchlist compartida** tablero↔gráfico (`api/watchlist/`, sincronización en vivo); tests en `dashboard/tests.py` |
+| `8789fef` | **Pantalla de bienvenida** (`cargando.html`) que `arrancar.bat` abre mientras levanta el sistema |
+| `c12aab2` | **"Hasta" en hora del servidor MT5** (`api/hora_servidor/`, `hora_servidor_mt5`) y selector en 24 h; el reproductor salta fines de semana en hora del servidor |
+| `458b5ac` | **Captura rápida de vela** en Backtesting: clic + Enter pega la fecha de la vela y carga (`activarCapturaRapida`) |
 
 **Ramas**: `master`, `feature/sr-fractal` (donde está lo más reciente),
 `optimizacion-performance`.
