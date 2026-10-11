@@ -308,6 +308,28 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* Aviso de carga sobre el gráfico: el spinner de la barra pasa desapercibido
+       y, al cambiar de fecha, el gráfico entero se rehace sin explicación. */
+    .carga-velo {
+      position: absolute; inset: 0; z-index: 9;
+      display: none; align-items: center; justify-content: center;
+      background: rgba(19, 23, 34, .55);
+      pointer-events: none;
+    }
+    .carga-velo.show { display: flex; }
+    .carga-velo .carga-caja {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px; border-radius: 8px;
+      background: rgba(30, 34, 45, .96); border: 1px solid #2a2e39;
+      color: #d1d4dc; font-size: 12.5px; box-shadow: 0 4px 16px rgba(0,0,0,.45);
+    }
+    .carga-velo .carga-rueda {
+      width: 18px; height: 18px; flex: none;
+      border: 2.5px solid #363c4e; border-top-color: #2962ff;
+      border-radius: 50%; animation: spin .7s linear infinite;
+    }
+    .carga-velo small { display: block; color: #848e9c; font-size: 10.5px; margin-top: 1px; }
+
     /* ── Barra de señal ──────────────────────────────── */
     .signal-bar {
       display: flex;
@@ -3296,6 +3318,7 @@ function crearPanel(rootEl, opciones = {}) {
     cargandoDatos = true;
     spinner.style.display = "block";
     setEstado("Conectando a MT5…", "cargando");
+    mostrarVeloCarga(symbol, timeframe, hasta);
     btnCargar.disabled = true;
 
     const params = new URLSearchParams({ symbol, timeframe });
@@ -3333,10 +3356,34 @@ function crearPanel(rootEl, opciones = {}) {
         setEstado("❌ No se pudo conectar al servidor", "error");
       }
     } finally {
+      ocultarVeloCarga();
       spinner.style.display = "none";
       btnCargar.disabled = false;
       cargandoDatos = false;
     }
+  }
+
+  // ── Aviso "Cargando…" sobre el gráfico ──
+  // Aparece solo si la carga tarda más de 200 ms (una carga rápida no parpadea)
+  // y nunca con el reproductor corriendo (cargaría una vez por vela y titilaría).
+  // Es un div con pointer-events:none: no estorba al ratón ni a la captura rápida.
+  const veloCarga = document.createElement("div");
+  veloCarga.className = "carga-velo";
+  veloCarga.innerHTML = '<div class="carga-caja"><span class="carga-rueda"></span><div><span class="carga-texto"></span><small>Trayendo velas y recalculando indicadores</small></div></div>';
+  chartPlot.appendChild(veloCarga);
+  let veloTimer = null;
+  function mostrarVeloCarga(symbol, timeframe, hasta) {
+    clearTimeout(veloTimer);
+    if (typeof reproduciendo !== "undefined" && reproduciendo) return;
+    veloTimer = setTimeout(() => {
+      veloCarga.querySelector(".carga-texto").textContent =
+        `Cargando ${symbol} ${timeframe}` + (hasta ? ` · hasta ${hasta.replace("T", " ")}` : "") + "…";
+      veloCarga.classList.add("show");
+    }, 200);
+  }
+  function ocultarVeloCarga() {
+    clearTimeout(veloTimer);
+    veloCarga.classList.remove("show");
   }
 
   async function cargarMasHistorial() {

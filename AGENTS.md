@@ -283,6 +283,10 @@ Gráfico: sincronizarWatchlist() → GET /grafico/api/watchlist/ (solo SELECT)
   vela ya no está cargada. Código: `activarCapturaRapida()` en
   `grafico.html` (bloque entre `// ── Captura rápida: inicio` y `fin`),
   con una sola llamada desde `init()` de `crearPanel`.
+- **Aviso "Cargando…" sobre el gráfico** (`mostrarVeloCarga` en `cargarDatos`):
+  velo con spinner y el texto `Cargando SÍMBOLO TF · hasta fecha…`. Aparece
+  solo si la carga pasa de 200 ms y nunca con el reproductor corriendo (si no,
+  titilaría en cada vela). Es `pointer-events:none`, no estorba al ratón.
 - **Pantalla de bienvenida al arrancar**: `arrancar.bat` abre
   `cargando.html` de inmediato y levanta servidor, worker y beat; la
   página sondea `http://localhost:8000/` y entra sola al tablero cuando el
