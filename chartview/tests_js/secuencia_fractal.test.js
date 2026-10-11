@@ -136,6 +136,15 @@ r.setups.forEach(s => {
 });
 assert.ok(r.stats.pctContinuacion >= 0 && r.stats.pctContinuacion <= 100);
 
+// 13) plazos por temporalidad: D1 usa un plazo de retesteo más corto; las demás
+// temporalidades siguen con los DEFAULTS; y una opción explícita siempre manda.
+assert.strictEqual(S.PLAZOS_POR_TF.D1.maxBarrasRetest, 60);
+assert.strictEqual(S.calcular(c, { timeframe: "D1" }).opciones.maxBarrasRetest, 60, "D1 usa 60");
+assert.strictEqual(S.calcular(c, { timeframe: "d1" }).opciones.maxBarrasRetest, 60, "no distingue mayúsculas");
+assert.strictEqual(S.calcular(c, { timeframe: "H1" }).opciones.maxBarrasRetest, S.DEFAULTS.maxBarrasRetest, "H1 sin cambios");
+assert.strictEqual(S.calcular(c).opciones.maxBarrasRetest, S.DEFAULTS.maxBarrasRetest, "sin temporalidad, DEFAULTS");
+assert.strictEqual(S.calcular(c, { timeframe: "D1", maxBarrasRetest: 90 }).opciones.maxBarrasRetest, 90, "lo explícito manda");
+
 console.log(
   `OK — ${r.setups.length} estructuras · ${r.stats.imbalances} imbalances · ` +
   `${r.stats.retesteos} retesteos · ${r.stats.continuaciones} continuaciones · ` +

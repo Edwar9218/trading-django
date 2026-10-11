@@ -82,6 +82,19 @@
     scoreVisible: 60,         // score mínimo para considerarla dibujable
   };
 
+  // Plazos por temporalidad. Los DEFAULTS de arriba están pensados para
+  // intradía: en D1, 120 velas son 4 meses, y una estructura que esperó 100
+  // velas su retesteo seguía apareciendo como "la actual" cuando el precio ya
+  // estaba en otro tramo (XAUUSD D1, retesteo a las 101 velas: el panel
+  // mostraba una alcista de hacía 4 meses mientras el precio caía). Medido
+  // con velas reales de XAUUSD D1 (sin mirar el futuro): con 60 ese caso
+  // desaparece y el acierto global no empeora. Solo D1 porque es lo único
+  // que se midió; el resto de temporalidades queda con los DEFAULTS hasta
+  // tener datos propios. Cualquier opción pasada a calcular() manda sobre esto.
+  const PLAZOS_POR_TF = {
+    D1: { maxBarrasRetest: 60 },
+  };
+
   // Puntuación fija y auditable: la suma de las etapas alcanzadas.
   const PUNTOS = {
     fractal: 20, ruptura: 20, desplazamiento: 20,
@@ -593,7 +606,8 @@
   // Orquestador
   // ─────────────────────────────────────────────────────────────
   function calcular(candles, userOpts) {
-    const o = Object.assign({}, DEFAULTS, userOpts || {});
+    const tf = String((userOpts && userOpts.timeframe) || "").toUpperCase();
+    const o = Object.assign({}, DEFAULTS, PLAZOS_POR_TF[tf] || {}, userOpts || {});
     const n = candles ? candles.length : 0;
     if (n < o.atrLen + o.fractalK * 4 + 10) return null;
 
@@ -680,7 +694,7 @@
   }
 
   const api = {
-    calcular, DEFAULTS, PUNTOS, ORDEN_ESTADOS, nivelDe,
+    calcular, DEFAULTS, PLAZOS_POR_TF, PUNTOS, ORDEN_ESTADOS, nivelDe,
     _internals: {
       atrWilder, mediaCuerpo, esPivote, medianStep, contexto, agregarHTF,
       detectarFractales, buscarFVG, faseEstructura, faseSeguimiento,
