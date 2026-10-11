@@ -633,6 +633,23 @@
       font-size: 9.5px; color: #848e9c; line-height: 1.5;
     }
     .seq-panel .seq-stats b { color: #b2b5be; }
+    /* Un bloque compacto por sentido (alcista / bajista) */
+    .seq-panel .seq-blq { padding: 6px 0 8px; border-bottom: 1px solid #1a1e29; }
+    .seq-panel .seq-blq:first-child { padding-top: 0; }
+    .seq-panel .seq-blq .seq-dir { margin-bottom: 4px; }
+    .seq-panel .seq-blq .seq-dir .seq-nivel { flex: 1; color: #5d606b; font-weight: 400; font-size: 9.5px; }
+    .seq-panel .seq-blq .seq-dir .seq-pts { font-size: 10px; color: #848e9c; font-weight: 400; }
+    .seq-panel .seq-blq .seq-dir .seq-pts b { font-size: 13px; color: #d1d4dc; }
+    .seq-panel .seq-vacio { color: #5d606b; font-weight: 400; font-size: 10px; }
+    .seq-panel .seq-blq.seq-cerrada { opacity: .55; }
+    .seq-panel .seq-puntos { display: inline-flex; gap: 4px; margin-left: 8px; align-items: center; }
+    .seq-panel .seq-pt { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid #5d606b; box-sizing: border-box; display: inline-block; }
+    .seq-panel .seq-pt.ok { background: #d1d4dc; border-color: #d1d4dc; }
+    .seq-panel .seq-pt.curso { border-color: #ffb300; background: rgba(255,179,0,.35); }
+    .seq-panel .seq-frase { margin-top: 5px; font-size: 11.5px; font-weight: 600; }
+    .seq-panel .seq-masfila { text-align: right; padding-top: 4px; }
+    .seq-panel .seq-mas { background: none; border: 0; color: #5d606b; font-size: 10px; cursor: pointer; padding: 0; }
+    .seq-panel .seq-mas:hover { color: #b2b5be; }
     .seq-panel .seq-capas {
       display: flex; flex-wrap: wrap; gap: 3px;
       padding: 6px 8px; border-top: 1px solid #2a2e39; background: #161a25;
@@ -1242,6 +1259,7 @@ function crearPanel(rootEl, opciones = {}) {
   let mostrarSEQ = chkSeq.checked;
   let seqPanelMin = leerLS("seq_panel_min", false);
   let seqGuiaVisible = leerLS("seq_panel_guia", false);
+  let seqMasVisible = leerLS("seq_panel_mas", false);
   // Cada elemento del gráfico se puede apagar por separado (punto 10 del
   // pliego): así se puede dejar solo las zonas, o solo las flechas.
   const seqCapas = {
@@ -2684,93 +2702,125 @@ function crearPanel(rootEl, opciones = {}) {
     });
   }
 
-  // ── Panel 13: estructura actual, checklist, score y estado ──
+  // Una sola estructura = una línea: etiqueta, 6 puntos de avance y UNA frase que dice
+  // qué falta. El detalle de cada etapa (niveles, %, score) queda en el tooltip;
+  // las capas, alertas y estadísticas viven bajo "más".
+  function fraseSEQ(s, dir, pasos) {
+    const d = dir > 0;
+    const velasDesde = s.cerrado && s.cierreIdx != null && currentSEQ ? currentSEQ.lastIdx - s.cierreIdx : null;
+    const hace = velasDesde === null ? ""
+      : velasDesde === 0 ? " en la última vela"
+      : velasDesde === 1 ? " hace 1 vela" : ` hace ${velasDesde} velas`;
+    if (s.estado === "INVALIDADO") return { txt: `Invalidada${hace}`, col: SEQ_COL.muerta, vieja: velasDesde > 5 };
+    if (s.estado === "COMPLETED") return { txt: `Completada${hace}`, col: SEQ_COL.ok, vieja: velasDesde > 5 };
+    // En CONFIRMATION la continuación ya cuenta en el score, pero todavía falta
+    // el nuevo extremo que completa la secuencia: ahí está lo que se espera.
+    const falta = s.estado === "CONFIRMATION" ? "Continuación"
+      : (pasos.find(p => p.estado === "curso") || {}).nom;
+    const z = s.imbalance ? `${fmtPrecioSEQ(s.imbalance.bottom)}–${fmtPrecioSEQ(s.imbalance.top)}` : "";
+    let txt;
+    if (falta === "Continuación" && s.extremoRef != null)
+      txt = `Falta ${d ? "nuevo máximo sobre" : "nuevo mínimo bajo"} ${fmtPrecioSEQ(s.extremoRef)}`;
+    else if (falta === "Retesteo") txt = `Falta retesteo${z ? ": vuelta a " + z : ""}`;
+    else if (falta === "Desplazamiento") txt = "Falta un movimiento fuerte";
+    else if (falta === "Imbalance") txt = "Falta el hueco (imbalance)";
+    else if (falta === "Ruptura") txt = "Falta la ruptura";
+    else txt = "En formación";
+    return { txt, col: SEQ_COL.aviso, vieja: false };
+  }
+
+  function bloqueSEQ(s, dir) {
+    const d = dir > 0;
+    const colDir = d ? SEQ_COL.alcista : SEQ_COL.bajista;
+    const badge = (col, txt) =>
+      `<span class="seq-badge" style="background:${hexToRgba(col, 0.18)};color:${col}">${txt}</span>`;
+    const nombre = d ? "▲ ALCISTA" : "▼ BAJISTA";
+    if (!s) {
+      return `<div class="seq-blq"><div class="seq-dir">${badge(colDir, nombre)}
+        <span class="seq-vacio">sin estructura en curso</span></div></div>`;
+    }
+    const pasos = etapasDe(s);
+    const f = fraseSEQ(s, dir, pasos);
+    if (s.estado === "CONFIRMATION") pasos[5].estado = "curso";   // la última aún no se completa
+    const puntos = pasos.map(p =>
+      `<i class="seq-pt ${p.estado}" title="${p.nom}${p.det ? ": " + p.det : ""}"></i>`).join("");
+    return `
+      <div class="seq-blq${f.vieja ? " seq-cerrada" : ""}" title="Puntaje ${s.score}/100 (confluencia, no probabilidad)">
+        <div class="seq-dir">${badge(colorDe(s), nombre)}<span class="seq-puntos">${puntos}</span></div>
+        <div class="seq-frase" style="color:${f.col}">${f.txt}</div>
+      </div>`;
+  }
+
+  // ── Panel 13: una línea por sentido; lo demás, bajo "más" ──
   function renderizarPanelSEQ() {
     if (!mostrarSEQ) { seqPanelEl.classList.remove("show"); return; }
     seqPanelEl.classList.add("show");
     seqPanelEl.classList.toggle("min", seqPanelMin);
 
-    const s = currentSEQ ? currentSEQ.actual : null;
-    let cuerpo;
-    if (!s) {
-      cuerpo = `<div class="seq-empty">Ninguna estructura en formación en las velas cargadas.<br>
-                Prueba "Cargar más historial" o una temporalidad mayor.</div>`;
-    } else {
-      const col = colorDe(s);
-      const pasos = etapasDe(s).map(p => `
-        <div class="seq-paso ${p.estado}">
-          <span class="seq-ico">${p.estado === "ok" ? "✓" : p.estado === "curso" ? "◌" : "·"}</span>
-          <span class="seq-nom">${p.nom}</span>
-          <span class="seq-det">${p.det}</span>
-        </div>`).join("");
+    // Una sola estructura a la vez (dos a la vez confundían): la viva más
+    // avanzada de cualquier sentido; si no hay viva, la cerrada más reciente.
+    let unica = null;
+    if (currentSEQ) {
+      const ord = window.SecuenciaFractal.ORDEN_ESTADOS;
+      const cands = [currentSEQ.mejorAlcista, currentSEQ.mejorBajista].filter(Boolean);
+      const vivas = cands.filter(s => !s.cerrado);
+      unica = vivas.length
+        ? vivas.reduce((a, b) => (ord.indexOf(b.estado) > ord.indexOf(a.estado) ? b : a))
+        : cands.reduce((a, b) => (!a || b.cierreIdx > a.cierreIdx ? b : a), null);
+    }
+    const cuerpo = !unica
+      ? `<div class="seq-empty">Sin estructura en curso.<br>Prueba "Cargar más historial".</div>`
+      : `<div class="seq-body">${bloqueSEQ(unica, unica.dir)}</div>`;
 
-      const estadoTxt = s.estado === "INVALIDADO"
-        ? `<b style="color:${SEQ_COL.muerta}">INVALIDADA</b><span>${s.motivo}</span>`
-        : s.estado === "COMPLETED"
-          ? `<b style="color:${SEQ_COL.ok}">COMPLETADA</b><span>secuencia entera cumplida; medir el resultado, no asumirlo</span>`
-          : `<b style="color:${SEQ_COL.aviso}">EN FORMACIÓN</b><span>esperando: ${
-              (etapasDe(s).find(p => p.estado === "curso") || { nom: "—" }).nom.toLowerCase()}</span>`;
-
-      const st = currentSEQ.stats;
-      const num = v => (v == null ? "—" : Math.round(v));
-      cuerpo = `
-        <div class="seq-body">
-          <div class="seq-dir">
-            <span class="seq-badge" style="background:${hexToRgba(col, 0.18)};color:${col}">
-              ${s.dir > 0 ? "▲ ALCISTA" : "▼ BAJISTA"}</span>
-            <span style="color:#5d606b;font-weight:400;font-size:9.5px">${
-              s.escala === "TF" ? "esta temporalidad" : `estructura ${s.escala}`}</span>
-          </div>
-          ${pasos}
-          <div class="seq-score">
-            <div class="seq-score-top"><span>SCORE</span><span><b>${s.score}</b>/100</span></div>
-            <div class="seq-bar"><i style="width:${s.score}%;background:${colorScore(s.score)}"></i></div>
-            <div style="margin-top:3px;font-size:9.5px;color:${colorScore(s.score)}">${s.nivel}</div>
-          </div>
-          <div class="seq-estado">${estadoTxt}</div>
-          <div class="seq-stats">
-            Historial de estas velas: <b>${st.imbalances}</b> imbalances ·
-            <b>${num(st.pctRetest)}%</b> retesteados ·
-            <b>${num(st.pctContinuacion)}%</b> continuaron<br>
-            Mediana tras la continuación: <b>${st.recorridoAtr == null ? "—" : st.recorridoAtr.toFixed(1)} ATR</b>
-            a favor en ${currentSEQ.opciones.barrasMedicion} velas
-            (muestra ${st.muestraCompleta}) · retroceso
-            <b>${st.retrocesoAtr == null ? "—" : st.retrocesoAtr.toFixed(1)} ATR</b>
-          </div>
+    let masHTML = "";
+    if (seqMasVisible) {
+      const capaBtn = (k, txt) => `<button type="button" data-capa="${k}" class="${seqCapas[k] ? "on" : ""}">${txt}</button>`;
+      const alertaBtn = (k, txt) => `<button type="button" data-alerta="${k}" class="${seqAlertas[k] ? "on" : ""}">${txt}</button>`;
+      let stats = "";
+      if (currentSEQ) {
+        const st = currentSEQ.stats;
+        const num = v => (v == null ? "—" : Math.round(v));
+        stats = `<div class="seq-stats">En estas velas: <b>${st.imbalances}</b> imbalances ·
+          <b>${num(st.pctRetest)}%</b> retesteados · <b>${num(st.pctContinuacion)}%</b> continuaron
+          (muestra chica: úsalo para comprobar, no para suponer).</div>`;
+      }
+      const sc = s => (s ? `${s.score}/100` : "—");
+      masHTML = `
+        <div class="seq-stats">Puntaje: <b>${sc(unica)}</b>
+          (cuántas etapas se cumplieron; no es probabilidad de acierto).</div>
+        ${stats}
+        <div class="seq-capas">
+          ${capaBtn("imbalance", "zona")}${capaBtn("ruptura", "ruptura")}${capaBtn("retest", "retest")}
+          ${capaBtn("fractales", "fractales")}${capaBtn("flechas", "flechas")}${capaBtn("etiqueta", "etiqueta")}
+        </div>
+        <div class="seq-capas" style="border-top-color:#1a1e29">
+          ${alertaBtn("activas", "🔔 alertas")}${alertaBtn("sonido", "sonido")}
+          ${alertaBtn("ruptura", "ruptura")}${alertaBtn("imbalance", "imbalance")}
+          ${alertaBtn("retest", "retest")}${alertaBtn("completo", "completa")}
         </div>`;
     }
 
-    const capaBtn = (k, txt) => `<button type="button" data-capa="${k}" class="${seqCapas[k] ? "on" : ""}">${txt}</button>`;
-    const alertaBtn = (k, txt) => `<button type="button" data-alerta="${k}" class="${seqAlertas[k] ? "on" : ""}">${txt}</button>`;
-
     seqPanelEl.innerHTML = `
-      <div class="seq-head">ESTRUCTURA ACTUAL
-        <span class="seq-sub">${currentSEQ ? `${currentSEQ.vivas.length} en curso` : ""}</span>
+      <div class="seq-head">ESTRUCTURAS
         <button type="button" class="seq-btn seq-btn-guia" title="Cómo leer este panel">?</button>
         <button type="button" class="seq-btn seq-btn-min" title="Minimizar / expandir">${seqPanelMin ? "+" : "−"}</button>
       </div>
       ${cuerpo}
-      <div class="seq-capas">
-        ${capaBtn("imbalance", "zona")}${capaBtn("ruptura", "ruptura")}${capaBtn("retest", "retest")}
-        ${capaBtn("fractales", "fractales")}${capaBtn("flechas", "flechas")}${capaBtn("etiqueta", "etiqueta")}
-      </div>
-      <div class="seq-capas" style="border-top-color:#1a1e29">
-        ${alertaBtn("activas", "🔔 alertas")}${alertaBtn("sonido", "sonido")}
-        ${alertaBtn("ruptura", "ruptura")}${alertaBtn("imbalance", "imbalance")}
-        ${alertaBtn("retest", "retest")}${alertaBtn("completo", "completa")}
-      </div>
+      <div class="seq-masfila"><button type="button" class="seq-mas">${seqMasVisible ? "menos ▴" : "más ▾"}</button></div>
+      ${masHTML}
       <div class="seq-guia ${seqGuiaVisible ? "show" : ""}">
-        La señal NO es el fractal: es la <b>secuencia completa</b>. Cada etapa suma
-        (fractal, ruptura, desplazamiento e imbalance 20; retesteo y continuación 10).<br>
-        <b>0-39</b> débil · <b>40-59</b> en desarrollo · <b>60-79</b> confirmada · <b>80-100</b> alta confluencia.<br>
-        <b>Imbalance</b> = hueco de 3 velas sin solape. <b>Retesteo</b> = el precio vuelve a
-        ENTRAR en la zona (acercarse no cuenta); el % dice cuánto la recorrió.<br>
-        <b>Score alto = estructura cumplida, no probabilidad de ganar.</b> Las cifras de abajo
-        son de estas velas: úsalas para comprobarlo, no para suponerlo.
+        Los 6 puntos son las etapas en orden: fractal, ruptura, movimiento fuerte, hueco
+        (imbalance), retesteo y continuación. <b>●</b> hecha · <b style="color:#ffb300">●</b> la que falta ·
+        <b>○</b> pendiente. Pasa el mouse por un punto para ver su detalle.<br>
+        Se muestra la <b>estructura más avanzada</b> en curso (alcista o bajista). Una cerrada hace tiempo se ve apagada.<br>
+        Completar la secuencia es confluencia, <b>no una promesa de que el precio continúe</b>.
       </div>`;
 
     seqPanelEl.querySelector(".seq-btn-min").onclick = () => {
       seqPanelMin = !seqPanelMin; guardarLS("seq_panel_min", seqPanelMin); renderizarPanelSEQ();
+    };
+    seqPanelEl.querySelector(".seq-mas").onclick = () => {
+      seqMasVisible = !seqMasVisible; guardarLS("seq_panel_mas", seqMasVisible); renderizarPanelSEQ();
     };
     seqPanelEl.querySelector(".seq-btn-guia").onclick = () => {
       seqGuiaVisible = !seqGuiaVisible; guardarLS("seq_panel_guia", seqGuiaVisible);

@@ -145,6 +145,32 @@ assert.strictEqual(S.calcular(c, { timeframe: "H1" }).opciones.maxBarrasRetest, 
 assert.strictEqual(S.calcular(c).opciones.maxBarrasRetest, S.DEFAULTS.maxBarrasRetest, "sin temporalidad, DEFAULTS");
 assert.strictEqual(S.calcular(c, { timeframe: "D1", maxBarrasRetest: 90 }).opciones.maxBarrasRetest, 90, "lo explícito manda");
 
+// 14) la mejor de cada sentido (panel con las dos a la vez): coherentes con
+// `actual`, sin fractales sueltos, y recorriendo la historia vela a vela.
+let conAlguna = 0, conAmbas = 0;
+for (let k = 80; k < c.length; k += 7) {
+  const rk = S.calcular(c.slice(0, k + 1));
+  if (!rk) continue;
+  const A = rk.mejorAlcista, B = rk.mejorBajista;
+  if (A) { assert.strictEqual(A.dir, 1, "mejorAlcista es alcista"); conAlguna++; }
+  if (B) { assert.strictEqual(B.dir, -1, "mejorBajista es bajista"); conAlguna++; }
+  if (A && B) conAmbas++;
+  [A, B].forEach(s => {
+    if (!s) return;
+    if (!s.cerrado) assert.notStrictEqual(s.estado, "FRACTAL", "un fractal sin romper no es estructura");
+    else assert.ok(s.imbalance && rk.lastIdx - s.cierreIdx <= rk.opciones.maxBarrasConfirm, "cerrada: solo reciente y con imbalance");
+  });
+  // si la actual está viva y ya rompió, es una de las dos mostradas
+  if (rk.actual && !rk.actual.cerrado && rk.actual.estado !== "FRACTAL") {
+    assert.ok(rk.actual === A || rk.actual === B || (rk.actual.dir > 0 ? A : B), "la actual tiene su sentido representado");
+    const delSentido = rk.actual.dir > 0 ? A : B;
+    assert.ok(delSentido, "el sentido de la actual siempre se muestra");
+    assert.ok(S.ORDEN_ESTADOS.indexOf(delSentido.estado) >= S.ORDEN_ESTADOS.indexOf(rk.actual.estado),
+      "lo mostrado de ese sentido es al menos tan avanzado como la actual");
+  }
+}
+assert.ok(conAlguna > 0, "hubo estructuras que mostrar");
+
 console.log(
   `OK — ${r.setups.length} estructuras · ${r.stats.imbalances} imbalances · ` +
   `${r.stats.retesteos} retesteos · ${r.stats.continuaciones} continuaciones · ` +

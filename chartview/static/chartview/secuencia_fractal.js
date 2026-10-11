@@ -671,6 +671,19 @@
       .sort((a, b) => (b.cierreTime || 0) - (a.cierreTime || 0));
     const actual = vivas[0] || cerradas[0] || null;
 
+    // La mejor de CADA sentido, para que el panel muestre las dos a la vez:
+    // elegir una sola ("la más avanzada") escondía la contraria aunque
+    // también estuviera viva. Un fractal sin romper no es una estructura
+    // (regla de oro: la señal es la secuencia, no el fractal), así que solo
+    // cuenta desde la ruptura. Si no hay ninguna viva, se muestra la última
+    // cerrada de ese sentido que llegó a imbalance, pero solo si es reciente
+    // (misma ventana que la confirmación): sirve para explicar por qué cayó,
+    // sin arrastrar fracasos de hace meses.
+    const mejorDe = dir =>
+      vivas.find(s => s.dir === dir && s.estado !== "FRACTAL") ||
+      cerradas.find(s => s.dir === dir && s.imbalance && ctx.last - s.cierreIdx <= o.maxBarrasConfirm) ||
+      null;
+
     // Dibujables: las que llegaron al imbalance, más recientes primero.
     const visibles = limpias
       .filter(s => s.imbalance && s.score >= o.scoreVisible)
@@ -683,6 +696,7 @@
 
     return {
       setups: limpias, vivas, visibles, actual, eventos,
+      mejorAlcista: mejorDe(1), mejorBajista: mejorDe(-1),
       stats: estadisticas(limpias, userOpts),
       escala: usaHTF ? `estructura en x${o.htfMult}, seguimiento en la base` : "una sola temporalidad",
       atr: ctx.atr[ctx.last] || 0,

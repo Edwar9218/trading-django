@@ -4,7 +4,7 @@
 > Basado en el código, la configuración y el historial de git reales.
 > Lo que no pudo determinarse está marcado como **No determinado**.
 >
-> Última sincronización: commit `458b5ac` (rama `feature/sr-fractal`).
+> Última sincronización: commit `4a4d63d` + panel de Secuencia simplificado (rama `feature/sr-fractal`).
 
 ---
 
@@ -327,7 +327,13 @@ Node**, que reciben las velas ya cargadas.
   seguimiento en la base.
 - `stats`: conteos, % de continuación, medianas en ATR, desglose por
   sesión y por motivo de invalidación.
-- Panel lateral, capas activables por separado, alertas conmutables.
+- Panel lateral corto: UNA sola estructura (la viva más avanzada, alcista o bajista; antes se mostraban dos y confundía; usa
+  `mejorAlcista`/`mejorBajista`) con 6 puntos de
+  avance y UNA frase de lo que falta. Puntaje, estadísticas, capas y alertas
+  quedan bajo "más" (`seq_panel_mas`). Una estructura cerrada hace >5 velas
+  se ve apagada, con su antigüedad.
+- Plazo de retesteo por temporalidad (`PLAZOS_POR_TF`): D1 = 60 velas; el resto
+  usa `DEFAULTS` (120). Calibrado solo con XAUUSD D1; las demás sin calibrar.
 
 ---
 
@@ -578,6 +584,8 @@ Solo lo que ayuda a entender la evolución.
 | `0e8ec72` | **"+ Agregar" temporalidades** y validación de divisas/temporalidades contra MT5 (`api/validar/`); **watchlist compartida** tablero↔gráfico (`api/watchlist/`, sincronización en vivo); tests en `dashboard/tests.py` |
 | `8789fef` | **Pantalla de bienvenida** (`cargando.html`) que `arrancar.bat` abre mientras levanta el sistema |
 | `c12aab2` | **"Hasta" en hora del servidor MT5** (`api/hora_servidor/`, `hora_servidor_mt5`) y selector en 24 h; el reproductor salta fines de semana en hora del servidor |
+| `4a4d63d` | Secuencia: plazo de retesteo en D1 de 120 a 60 velas |
+| (este cambio) | Secuencia: panel con las dos estructuras (alcista y bajista), corto y claro |
 | `458b5ac` | **Captura rápida de vela** en Backtesting: clic + Enter pega la fecha de la vela y carga (`activarCapturaRapida`) |
 
 **Ramas**: `master`, `feature/sr-fractal` (donde está lo más reciente),
