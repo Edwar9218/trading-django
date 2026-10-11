@@ -4,7 +4,7 @@
 > Basado en el código, la configuración y el historial de git reales.
 > Lo que no pudo determinarse está marcado como **No determinado**.
 >
-> Última sincronización: commit `4a4d63d` + panel de Secuencia simplificado (rama `feature/sr-fractal`).
+> Última sincronización: commit `4a4d63d` + panel de Secuencia de una sola estructura (rama `feature/sr-fractal`).
 
 ---
 
@@ -327,13 +327,18 @@ Node**, que reciben las velas ya cargadas.
   seguimiento en la base.
 - `stats`: conteos, % de continuación, medianas en ATR, desglose por
   sesión y por motivo de invalidación.
-- Panel lateral corto: UNA sola estructura (la viva más avanzada, alcista o bajista; antes se mostraban dos y confundía; usa
-  `mejorAlcista`/`mejorBajista`) con 6 puntos de
-  avance y UNA frase de lo que falta. Puntaje, estadísticas, capas y alertas
-  quedan bajo "más" (`seq_panel_mas`). Una estructura cerrada hace >5 velas
-  se ve apagada, con su antigüedad.
+- Panel lateral corto: muestra UNA sola estructura (la viva más avanzada, alcista
+  o bajista, elegida entre `mejorAlcista`/`mejorBajista`; si no hay viva, la
+  cerrada más reciente). Dos a la vez confundían al dueño. Lleva 6 puntos de
+  avance (● hecha, ◐ la que falta, ○ pendiente) y UNA frase de lo que falta
+  ("Falta retesteo: vuelta a …", "Falta nuevo máximo sobre …"). Puntaje,
+  estadísticas, capas y alertas quedan bajo "más" (`seq_panel_mas`). Una
+  estructura cerrada hace >5 velas se ve apagada, con su antigüedad. El motor
+  sigue devolviendo `actual`, `mejorAlcista` y `mejorBajista`.
 - Plazo de retesteo por temporalidad (`PLAZOS_POR_TF`): D1 = 60 velas; el resto
-  usa `DEFAULTS` (120). Calibrado solo con XAUUSD D1; las demás sin calibrar.
+  usa `DEFAULTS` (120). Calibración (XAUUSD/EURUSD, recorrido vela a vela): solo D1 necesitaba
+  ajuste. H1, H4 y M15 quedan con `DEFAULTS`: la estructura mostrada es siempre
+  reciente (edad mediana del imbalance 2-24 velas) y 240 de plazo sale peor.
 
 ---
 
@@ -511,13 +516,16 @@ Cosas que no deberían romperse:
    un warning si reaparecen. Si aparece ese warning, algo lo reintrodujo.
 6. **`core/engine/` sin tests.** Es la lógica más pesada y más delicada
    del proyecto.
-7. **Umbrales de la Secuencia estructural sin calibrar** contra datos
-   reales. Los defaults (`cuerpoMult 1.5`, `rangoAtrMin 1.0`,
-   `maxBarrasRuptura 40`, `maxBarrasRetest 120`) están pensados para
-   intradía; **en D1 son claramente largos** (120 velas = 120 días) y
-   probablemente inflen el % de continuación.
+7. **Umbrales de la Secuencia estructural calibrados solo parcialmente.**
+   D1 usa `maxBarrasRetest: 60` (`PLAZOS_POR_TF`); H1/H4/M15 se revisaron con
+   XAUUSD y EURUSD y no mostraron estructuras vencidas, así que siguen con los
+   `DEFAULTS` (`cuerpoMult 1.5`, `rangoAtrMin 1.0`, `maxBarrasRuptura 40`,
+   `maxBarrasRetest 120`). Otras divisas, W1/MN1 y historiales largos de
+   intradía no se han medido.
 8. **Estadísticas con muestras chicas.** `stats` sobre las velas cargadas
-   de un solo símbolo da muestras de ~10 casos. No concluir nada de ahí.
+   de un solo símbolo da muestras de ~10 casos. En las pruebas hechas (200-830
+   velas solapadas, un solo tramo de mercado) el acierto de la dirección a 12-24
+   velas quedó entre 46% y 65%, sin ventaja demostrable. No concluir nada de ahí.
 9. **Dependencias sin pin** (pandas, numpy, matplotlib). Una versión
    nueva puede romper el cálculo sin aviso.
 10. **`grafico.html` tiene ~4630 líneas** con todo mezclado (CSS, HTML,
@@ -547,7 +555,7 @@ Identificado en README, código y commits:
 - [ ] Vista de backtest agregado de la Secuencia estructural: correr
       `stats` sobre el watchlist completo y tabular por símbolo /
       temporalidad / sesión.
-- [ ] Calibrar los umbrales de la Secuencia por temporalidad.
+- [ ] Calibrar la Secuencia con más historia (meses de H1/M15, W1/MN1) y más pares.
 - [ ] Tests de `core/engine/`.
 - [ ] Pinear versiones de pandas/numpy/matplotlib.
 - [ ] Evaluar partir `grafico.html` en archivos estáticos separados.
@@ -585,7 +593,7 @@ Solo lo que ayuda a entender la evolución.
 | `8789fef` | **Pantalla de bienvenida** (`cargando.html`) que `arrancar.bat` abre mientras levanta el sistema |
 | `c12aab2` | **"Hasta" en hora del servidor MT5** (`api/hora_servidor/`, `hora_servidor_mt5`) y selector en 24 h; el reproductor salta fines de semana en hora del servidor |
 | `4a4d63d` | Secuencia: plazo de retesteo en D1 de 120 a 60 velas |
-| (este cambio) | Secuencia: panel con las dos estructuras (alcista y bajista), corto y claro |
+| (pendiente de push) | Secuencia: panel corto con una sola estructura (puntos de avance + una frase, resto bajo "más"); calibración de H1/H4/M15 sin cambios |
 | `458b5ac` | **Captura rápida de vela** en Backtesting: clic + Enter pega la fecha de la vela y carga (`activarCapturaRapida`) |
 
 **Ramas**: `master`, `feature/sr-fractal` (donde está lo más reciente),
