@@ -663,6 +663,61 @@ def fetch_mt5_older_candles(symbol: str, timeframe: str, antes_de_ts: int, canti
         ]
 
 
+def fetch_mt5_newer_candles(symbol: str, timeframe: str, desde_ts: int, cantidad: int = 300):
+    """
+    Trae las velas POSTERIORES a 'desde_ts' (timestamp de la última vela que
+    el navegador ya tiene, en hora del servidor MT5). Es lo opuesto de
+    fetch_mt5_older_candles y sirve para el Backtesting: tras cortar el
+    gráfico en una vela, mostrar CRUDO qué hizo el precio después.
+
+    A propósito devuelve solo {time, open, high, low, close}: nada de canales,
+    Kalman ni indicadores — esas velas nunca deben alimentar un cálculo del
+    pasado (los indicadores seguirían siendo causales, pero así ni siquiera
+    existe el riesgo). Puede devolver menos de 'cantidad' (o ninguna) si el
+    corte está cerca del presente.
+    """
+    if mt5 is None:
+        raise Mt5Unavailable("el paquete MetaTrader5 no está instalado en este Python.")
+
+    tf_attr = _TF_MAP.get(timeframe.upper())
+    if tf_attr is None:
+        raise Mt5DataError(f"timeframe '{timeframe}' no reconocido.")
+    mt5_tf = getattr(mt5, tf_attr)
+
+    with mt5_session():
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            raise Mt5DataError(f"el símbolo '{symbol}' no existe en tu Market Watch.")
+        if not symbol_info.visible:
+            mt5.symbol_select(symbol, True)
+            for _ in range(15):
+                tick = mt5.symbol_info_tick(symbol)
+                if tick is not None and tick.bid > 0:
+                    break
+                time.sleep(0.2)
+
+        # Hora del servidor marcada como UTC (ver _hasta_como_hora_servidor).
+        date_from = datetime.fromtimestamp(desde_ts, timezone.utc)
+        bars_per_day = _BARS_PER_DAY.get(timeframe.upper(), 6)
+        # x1.6 de margen y x7/5 por los fines de semana sin velas.
+        dias = max(int(cantidad * 1.6 / max(bars_per_day, 0.01) * 7 / 5) + 3, 5)
+        dias = min(dias, 365 * 20)
+        date_to = date_from + timedelta(days=dias)
+
+        rates = mt5.copy_rates_range(symbol, mt5_tf, date_from, date_to)
+        if rates is None or len(rates) == 0:
+            return []
+        # copy_rates_range incluye la vela cuyo open == date_from: es la que
+        # el navegador ya tiene, se descarta para no duplicarla.
+        rates = rates[rates["time"] > desde_ts][:cantidad]
+
+        return [
+            {"time": int(r["time"]), "open": float(r["open"]), "high": float(r["high"]),
+             "low": float(r["low"]), "close": float(r["close"])}
+            for r in rates
+        ]
+
+
 def _long_channel(data, incremental, auto_pivot, show_both):
     pivot_len = cfg("PIVOT_LEN", 21)
     base_kw = dict(atr_len=cfg("ATR_LEN", 14), min_channel_bars=cfg("MIN_BARS", 10),

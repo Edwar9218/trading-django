@@ -192,6 +192,37 @@ def api_velas_extra(request):
 
 
 @login_required
+def api_velas_despues(request):
+    """Backtesting: velas POSTERIORES a una vela dada (`desde` = su `time`).
+    Solo velas crudas, sin canales ni indicadores. Útil también para revisar
+    a mano qué pasó después del corte:
+      /grafico/api/velas_despues/?symbol=XAUUSD&timeframe=D1&desde=<time>&cantidad=300
+    """
+    symbol = request.GET.get("symbol", "").strip()
+    timeframe = request.GET.get("timeframe", "H4").strip()
+    desde = request.GET.get("desde", "").strip()
+    cantidad = request.GET.get("cantidad", "300").strip()
+
+    if not symbol or not desde:
+        return JsonResponse({"error": "Faltan parámetros symbol/desde."}, status=400)
+    try:
+        desde_ts = int(desde)
+        cantidad = max(1, min(int(cantidad), 2000))
+    except ValueError:
+        return JsonResponse({"error": "desde/cantidad deben ser números."}, status=400)
+
+    try:
+        candles = analysis.fetch_mt5_newer_candles(symbol, timeframe, desde_ts, cantidad)
+    except (analysis.Mt5Unavailable, analysis.Mt5DataError) as e:
+        return JsonResponse({"error": str(e)}, status=400)
+    except Exception as e:
+        return JsonResponse({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+    return JsonResponse({"symbol": symbol.upper(), "timeframe": timeframe.upper(),
+                         "desde": desde_ts, "candles": candles})
+
+
+@login_required
 def api_config(request):
     """Mismo contrato que /config del servidor Flask original — le dice
     al HTML cuáles son el símbolo/timeframe por defecto para precargar

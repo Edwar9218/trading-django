@@ -283,6 +283,19 @@ Gráfico: sincronizarWatchlist() → GET /grafico/api/watchlist/ (solo SELECT)
   vela ya no está cargada. Código: `activarCapturaRapida()` en
   `grafico.html` (bloque entre `// ── Captura rápida: inicio` y `fin`),
   con una sola llamada desde `init()` de `crearPanel`.
+- **Futuro crudo** (Backtesting, tras clic + Enter): el gráfico se corta en la
+  vela elegida, con todos sus indicadores, y a la derecha aparecen las velas
+  posteriores SIN indicadores (hasta 300, serie `futuroSerie` de colores
+  apagados) para ver cómo siguió el precio. `futuroCrudo = {hasta}` lo fija
+  Enter o el buscador manual de fecha/hora/minuto (`desdeControles`; el
+  reproductor y ⏮ ⏭ escriben `.value` por código y NO lo activan); `cargarDatos` lo atiende solo si el "Hasta" coincide, así cualquier
+  otra carga (replay, otra fecha, otro modo) lo borra sola. Las velas
+  posteriores NO entran en `loadedCandles` ni en ningún cálculo. Los
+  indicadores no pueden proyectarse sobre esa zona: `limiteDerecha` recorta
+  líneas de canales, KN y S/R (`hastaCorte`) y el canvas se recorta con `clip`
+  en `redrawOverlay`. Endpoint: `api/velas_despues/?symbol&timeframe&desde=<time>&cantidad`
+  (`fetch_mt5_newer_candles`); también sirve para pasar "qué pasó después" a
+  mano junto con `api/datos/?...&hasta=`.
 - **Aviso "Cargando…" sobre el gráfico** (`mostrarVeloCarga` en `cargarDatos`):
   velo con spinner y el texto `Cargando SÍMBOLO TF · hasta fecha…`. Aparece
   solo si la carga pasa de 200 ms y nunca con el reproductor corriendo (si no,
@@ -500,6 +513,7 @@ Cosas que no deberían romperse:
 | Captura rápida: escribir `#fecha-global` + `change` en vez de llamar a `cargarDatos` | el `change` ya pausa el replay y recarga todos los paneles; llamar a `cargarDatos` cargaría solo uno y duplicaría lógica | `grafico.html` |
 | Captura rápida sin checkbox ni interruptor | pedido expreso del dueño: no llenar el gráfico de checkboxes; Enter siempre pega y carga | `grafico.html` |
 | Captura rápida solo escucha el mouse, nunca frena eventos ni usa el canvas de dibujo | el arrastre/zoom/paneo y los dibujos quedan exactamente como antes; la marca y la etiqueta son `div` con `pointer-events:none` | `grafico.html` |
+| Futuro crudo en una serie aparte + recorte de proyecciones de indicadores | las velas posteriores no deben tocar ningún cálculo ni verse "analizadas"; `limiteDerecha` se fija ANTES de dibujar para que nada se proyecte sobre ellas | `grafico.html` |
 | `arrancar.bat` abre `cargando.html` antes de levantar nada | el navegador muestra algo de inmediato y entra solo cuando el servidor responde | `arrancar.bat`, `cargando.html` |
 
 ---
@@ -597,7 +611,8 @@ Solo lo que ayuda a entender la evolución.
 | `8789fef` | **Pantalla de bienvenida** (`cargando.html`) que `arrancar.bat` abre mientras levanta el sistema |
 | `c12aab2` | **"Hasta" en hora del servidor MT5** (`api/hora_servidor/`, `hora_servidor_mt5`) y selector en 24 h; el reproductor salta fines de semana en hora del servidor |
 | `4a4d63d` | Secuencia: plazo de retesteo en D1 de 120 a 60 velas |
-| (pendiente de push) | Secuencia: panel corto con una sola estructura (puntos de avance + una frase, resto bajo "más"); calibración de H1/H4/M15 sin cambios |
+| `442fb4e` | Secuencia: panel corto con una sola estructura (puntos de avance + una frase, resto bajo "más"); calibración de H1/H4/M15 sin cambios |
+| (pendiente de push) | Backtesting: tras clic + Enter o buscando a mano fecha/hora se ven las velas posteriores crudas (`api/velas_despues/`) |
 | `458b5ac` | **Captura rápida de vela** en Backtesting: clic + Enter pega la fecha de la vela y carga (`activarCapturaRapida`) |
 
 **Ramas**: `master`, `feature/sr-fractal` (donde está lo más reciente),

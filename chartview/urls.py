@@ -9,6 +9,7 @@ urlpatterns = [
     path("api/hora_servidor/", views.api_hora_servidor, name="api_hora_servidor"),
     path("api/vela_actual/", views.api_vela_actual, name="api_vela_actual"),
     path("api/velas_extra/", views.api_velas_extra, name="api_velas_extra"),
+    path("api/velas_despues/", views.api_velas_despues, name="api_velas_despues"),
     path("api/config/", views.api_config, name="api_config"),
     path("api/watchlist/", views.api_watchlist, name="api_watchlist"),
     path("api/ping/", views.api_ping, name="api_ping"),

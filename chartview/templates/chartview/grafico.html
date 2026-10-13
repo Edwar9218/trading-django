@@ -1079,6 +1079,7 @@ const API = {
   horaServidor: "{% url 'chartview:api_hora_servidor' %}",
   vela_actual: "{% url 'chartview:api_vela_actual' %}",
   velas_extra: "{% url 'chartview:api_velas_extra' %}",
+  velas_despues: "{% url 'chartview:api_velas_despues' %}",
   config: "{% url 'chartview:api_config' %}",
   watchlist: "{% url 'chartview:api_watchlist' %}",
   ping: "{% url 'chartview:api_ping' %}",
@@ -1305,6 +1306,12 @@ function crearPanel(rootEl, opciones = {}) {
   let seqEventosVistos = new Set();   // ids ya alertados (no repetir)
   let seqUltimaBarra = null;          // última vela evaluada para alertas
   let lastRealTime = null;
+  // Futuro crudo: `futuroSerie` dibuja las velas posteriores al corte;
+  // `limiteDerecha` (tiempo de la última vela analizada) recorta las
+  // proyecciones de los indicadores para que no invadan esa zona.
+  let futuroSerie = null;
+  let limiteDerecha = null;
+  let cantidadFuturo = 0;
   let loadedCandles = [];
   let symbolActual = null, timeframeActual = null;
   let cargandoDatos = false, cargandoMas = false;
@@ -1724,7 +1731,8 @@ function crearPanel(rootEl, opciones = {}) {
       });
   }
 
-  const toSeriesData = pts => pts.map(p => ({ time: p.t, value: p.y }));
+  const hastaCorte = (arr, f) => (limiteDerecha === null ? arr : arr.filter(x => f(x) <= limiteDerecha));
+  const toSeriesData = pts => hastaCorte(pts, p => p.t).map(p => ({ time: p.t, value: p.y }));
 
   function dibujarCanales() {
     channelSeriesList.forEach(s => chart.removeSeries(s));
@@ -2134,7 +2142,7 @@ function crearPanel(rootEl, opciones = {}) {
       // tramo histórico (perfectamente alineados) y solo usa un intervalo
       // típico para el tramo de proyección hacia el futuro (donde no hay
       // velas reales con las que desalinearse).
-      const data = k.allTimes.map(t => ({ time: t, value: level }));
+      const data = hastaCorte(k.allTimes, t => t).map(t => ({ time: t, value: level }));
       s.setData(data);
       knSeriesList.push(s);
     };
@@ -2286,7 +2294,9 @@ function crearPanel(rootEl, opciones = {}) {
       const s = chart.addLineSeries({
         color, lineWidth: width, priceLineVisible: false, lastValueVisible: false, title: "",
       });
-      s.setData(points.length === 1 ? [points[0], points[0]] : points);
+      const pts = hastaCorte(points, q => q.time);
+      if (!pts.length) return;
+      s.setData(pts.length === 1 ? [pts[0], pts[0]] : pts);
       srSeriesList.push(s);
     };
 
@@ -2944,6 +2954,18 @@ function crearPanel(rootEl, opciones = {}) {
     const w = overlayCanvas.clientWidth, h = overlayCanvas.clientHeight;
     overlayCtx.clearRect(0, 0, w, h);
 
+    // Con el futuro crudo visible, lo que dibujan los indicadores (rellenos,
+    // zonas, banderas…) se corta en la última vela analizada.
+    overlayCtx.save();
+    if (limiteDerecha !== null) {
+      const xCorte = chart.timeScale().timeToCoordinate(limiteDerecha);
+      if (xCorte !== null) {
+        overlayCtx.beginPath();
+        overlayCtx.rect(0, 0, xCorte + 1, h);
+        overlayCtx.clip();
+      }
+    }
+
     currentChannels
       .filter(ch => filtroCanales[grupoDeCanal(ch.label)])
       .forEach(ch => {
@@ -3020,6 +3042,8 @@ function crearPanel(rootEl, opciones = {}) {
       currentSR.supports.filter(l => l.valid).forEach(l => drawLevelFlag(l, supFlagColor));
       currentSR.flips.forEach(f => drawLevelFlag(f, f.isSupport ? rsFlagColor : srFlagColor));
     }
+
+    overlayCtx.restore();   // fin del recorte de indicadores
 
     if (lastRealTime !== null) {
       const xNow = chart.timeScale().timeToCoordinate(lastRealTime);
@@ -3343,10 +3367,36 @@ function crearPanel(rootEl, opciones = {}) {
       console.log("[grafico] velas recibidas:", data.symbol, data.timeframe,
         data.first_date, "→", data.last_date, `(${data.n_candles_total} velas, hasta pedido: ${hasta || "(vacío = en vivo)"})`);
 
+      // ¿Esta carga viene de clic + Enter? Solo entonces se muestra lo posterior.
+      // Cualquier otro "Hasta" (replay, otra fecha) invalida el pedido.
+      const pideFuturo = modoGrafico === "backtesting" && futuroCrudo !== null
+        && futuroCrudo.hasta === hasta && data.candles && data.candles.length > 0;
+      if (!pideFuturo) {
+        if (futuroCrudo !== null && futuroCrudo.hasta !== hasta) futuroCrudo = null;
+        limiteDerecha = null;
+        cantidadFuturo = 0;
+        futuroSerie.setData([]);
+      } else {
+        // Antes de dibujar: así los indicadores no proyectan nada sobre lo que viene.
+        limiteDerecha = data.candles[data.candles.length - 1].time;
+      }
+
       renderizarTodo(data, { mantenerVista });
       symbolActual = symbol;
       timeframeActual = timeframe;
-      setEstado("✓ Cargado", "ok");
+      let nota = "";
+      if (pideFuturo) {
+        try {
+          await cargarFuturo(symbol, timeframe);
+          nota = cantidadFuturo > 0
+            ? ` · +${cantidadFuturo} velas posteriores, sin indicadores`
+            : " · no hay velas posteriores (es la última)";
+        } catch (e) {
+          nota = " · no se pudieron traer las velas posteriores";
+          console.error("[grafico] velas posteriores:", e);
+        }
+      }
+      setEstado("✓ Cargado" + nota, "ok");
       await cargarDibujosServidor(symbol, timeframe);
 
     } catch (e) {
@@ -3361,6 +3411,33 @@ function crearPanel(rootEl, opciones = {}) {
       btnCargar.disabled = false;
       cargandoDatos = false;
     }
+  }
+
+  // Trae las velas posteriores al corte y las dibuja CRUDAS en `futuroSerie`.
+  // Nada de esto entra en loadedCandles ni en ningún cálculo: los indicadores
+  // solo ven hasta el corte, igual que antes.
+  async function cargarFuturo(symbol, timeframe) {
+    const ultima = loadedCandles[loadedCandles.length - 1];
+    const params = new URLSearchParams({
+      symbol, timeframe, desde: ultima.time, cantidad: FUTURO_CRUDO_VELAS,
+    });
+    const res = await fetch(`${API.velas_despues}?${params.toString()}`, {
+      signal: AbortSignal.timeout(60000),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.status);
+    const velas = d.candles || [];
+    futuroSerie.setData(velas);
+    cantidadFuturo = velas.length;
+    if (velas.length) {
+      // Encuadre: algo de pasado analizado a la izquierda y lo que vino después a la derecha.
+      const ultimo = loadedCandles.length - 1;
+      chart.timeScale().setVisibleLogicalRange({
+        from: ultimo - 70,
+        to:   ultimo + Math.min(velas.length, 120) + 8,
+      });
+    }
+    requestAnimationFrame(redrawOverlay);
   }
 
   // ── Aviso "Cargando…" sobre el gráfico ──
@@ -3482,6 +3559,15 @@ function crearPanel(rootEl, opciones = {}) {
       priceLineColor: "#ffcc00",
       priceLineWidth: 1,
       priceLineStyle: 1,
+    });
+
+    // Serie aparte para las velas POSTERIORES al corte (Backtesting). Colores
+    // apagados para distinguirlas del tramo analizado. Ningún indicador la lee.
+    futuroSerie = chart.addCandlestickSeries({
+      upColor:"#4d8f88", downColor:"#b8545a",
+      borderVisible:false,
+      wickUpColor:"#4d8f88", wickDownColor:"#b8545a",
+      priceLineVisible:false, lastValueVisible:false,
     });
 
     overlayCtx = overlayCanvas.getContext("2d");
@@ -3875,6 +3961,13 @@ function crearPanel(rootEl, opciones = {}) {
 const CAPTURA_UMBRAL_ARRASTRE_PX = 4;
 let capturaPanelConSeleccion = null;   // solo un panel a la vez tiene vela seleccionada
 
+// "Futuro crudo": tras clic + Enter, el gráfico se corta en esa vela (con todos
+// sus indicadores) y a la derecha se muestran, SIN indicadores, las velas que
+// vinieron después. Guarda el "Hasta" para el que se pidió: cualquier otra
+// carga (otra fecha, replay, otro modo) tiene otro "Hasta" y lo borra sola.
+let futuroCrudo = null;                // { hasta: "YYYY-MM-DDTHH:MM" } | null
+const FUTURO_CRUDO_VELAS = 300;
+
 function activarCapturaRapida(p) {
   const dos = n => String(n).padStart(2, "0");
   function fechaVela(t) {
@@ -3997,6 +4090,7 @@ function activarCapturaRapida(p) {
     const valor = fechaVela(seleccion.time).valor;
     limpiar();
     const campo = document.getElementById("fecha-global");
+    futuroCrudo = { hasta: valor };                   // la carga que sigue mostrará lo posterior, crudo
     campo.value = valor;                              // actualiza día/hora/minuto visibles
     campo.dispatchEvent(new Event("change"));         // mismo camino que tipear la fecha: pausa, y recarga los paneles
   });
@@ -4067,7 +4161,13 @@ function actualizarLinkTablero() {
     set(v) { nativo.set.call(oculto, v); pintar(v); },
   });
   function desdeControles() {
-    nativo.set.call(oculto, dia.value ? `${dia.value}T${selHora.value}:${selMin.value}` : "");
+    const valor = dia.value ? `${dia.value}T${selHora.value}:${selMin.value}` : "";
+    nativo.set.call(oculto, valor);
+    // Buscar a mano por fecha/hora/minuto se comporta igual que clic + Enter:
+    // el gráfico se corta ahí y se muestran, crudas, las velas posteriores.
+    // (El reproductor y los pasos ⏮ ⏭ escriben `.value` por código, sin pasar
+    // por aquí, así que ellos no lo activan.) Solo en Backtesting y con fecha.
+    if (modoGrafico === "backtesting" && valor) futuroCrudo = { hasta: valor };
     oculto.dispatchEvent(new Event("change"));
   }
   [dia, selHora, selMin].forEach((el) => el.addEventListener("change", desdeControles));
