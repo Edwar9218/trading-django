@@ -3164,6 +3164,23 @@ function crearPanel(rootEl, opciones = {}) {
     });
   }
 
+  // ── Encuadre inicial al CARGAR ──
+  // Cada carga "de verdad" (botón Cargar, Enter, cambio Online/Backtesting,
+  // buscar fecha, clic + Enter, divisa/timeframe nuevos) deja la última vela
+  // analizada justo en el centro de la pantalla. Conserva el ancho (zoom)
+  // que ya tenía el usuario si es razonable; si no, usa un ancho por defecto.
+  // Los pasos del reproductor NO usan esto: siguen restaurando la vista.
+  const VISTA_ANCHO_DEFECTO = 160;   // velas visibles en total (mitad a cada lado)
+  function centrarEnUltimaVela(nVelas, vista) {
+    let ancho = vista ? (vista.hastaUltima - vista.desdeUltima) : VISTA_ANCHO_DEFECTO;
+    if (!(ancho >= 20 && ancho <= 600)) ancho = VISTA_ANCHO_DEFECTO;
+    const ultimo = nVelas - 1;
+    chart.timeScale().setVisibleLogicalRange({
+      from: ultimo - ancho / 2,
+      to:   ultimo + ancho / 2,
+    });
+  }
+
   function renderizarTodo(data, opciones = {}) {
     // mantenerVista: true cuando el símbolo/timeframe no cambiaron respecto
     // a la carga anterior (ej. el reproductor de replay avanzando un paso,
@@ -3174,11 +3191,14 @@ function crearPanel(rootEl, opciones = {}) {
     // de hacer fitContent(). Si cambió la divisa o el timeframe, sigue
     // haciendo fitContent() como siempre, porque ahí sí es un gráfico
     // distinto y no hay nada previo que tenga sentido preservar.
-    const { mantenerVista = false } = opciones;
+    // centrar: la última vela analizada queda en el centro de la pantalla.
+    // vistaPrevia: vista capturada por cargarDatos ANTES de vaciar las velas
+    // posteriores (si se capturara después, el gráfico ya se habría corrido).
+    const { mantenerVista = false, centrar = false, vistaPrevia = null } = opciones;
 
     // Se lee la vista AHORA (justo antes de reemplazar los datos), no antes
     // del fetch: si el usuario hizo zoom/paneo mientras cargaba, se respeta.
-    const vista = mantenerVista ? capturarVista() : null;
+    const vista = mantenerVista ? (vistaPrevia || capturarVista()) : null;
 
     emptyScreen.style.display = "none";
 
@@ -3244,7 +3264,10 @@ function crearPanel(rootEl, opciones = {}) {
     // alerta (ya ocurrió). Solo se avisa de lo que pase a partir de acá.
     revisarAlertasSEQ(true);
 
-    if (vista) {
+    if (centrar) {
+      // Carga nueva: última vela analizada en el centro.
+      centrarEnUltimaVela(data.candles.length, vista);
+    } else if (vista) {
       // Mismo gráfico de antes (replay / vela nueva / solo cambió la fecha):
       // se restaura el mismo encuadre relativo a la última vela.
       restaurarVista(vista, data.candles.length);
@@ -3331,8 +3354,11 @@ function crearPanel(rootEl, opciones = {}) {
     }
   }
 
-  async function cargarDatos() {
+  async function cargarDatos(opciones = {}) {
     if (cargandoDatos) return;
+    // OJO: los listeners de click/keydown le pasan el evento como 1er argumento,
+    // por eso solo se lee `centrar` si viene como booleano.
+    const pedidoCentrar = opciones && opciones.centrar === true;
 
     const symbol    = symbolInput.value.trim().toUpperCase();
     const timeframe = timeframeSelect.value;
@@ -3349,6 +3375,8 @@ function crearPanel(rootEl, opciones = {}) {
     // traer las velas nuevas — así el gráfico no "salta" a fitContent()
     // cada vez y el usuario no tiene que reacomodarlo a cada rato.
     const mantenerVista = symbol === symbolActual && timeframe === timeframeActual;
+    // Se centra si la carga lo pide, o si es un gráfico nuevo (otra divisa/timeframe).
+    const centrar = pedidoCentrar || !mantenerVista;
 
     cargandoDatos = true;
     spinner.style.display = "block";
@@ -3378,6 +3406,11 @@ function crearPanel(rootEl, opciones = {}) {
       console.log("[grafico] velas recibidas:", data.symbol, data.timeframe,
         data.first_date, "→", data.last_date, `(${data.n_candles_total} velas, hasta pedido: ${hasta || "(vacío = en vivo)"})`);
 
+      // La vista se captura ANTES de vaciar/llenar las velas posteriores: al
+      // quitar o poner esas velas, la escala de tiempo corre el encuadre y,
+      // si se leyera después, el gráfico quedaría desplazado.
+      const vistaPrevia = mantenerVista ? capturarVista() : null;
+
       // ¿Esta carga viene de clic + Enter? Solo entonces se muestra lo posterior.
       // Cualquier otro "Hasta" (replay, otra fecha) invalida el pedido.
       const pideFuturo = modoGrafico === "backtesting" && verFuturoCrudo && futuroCrudo !== null
@@ -3392,7 +3425,7 @@ function crearPanel(rootEl, opciones = {}) {
         limiteDerecha = data.candles[data.candles.length - 1].time;
       }
 
-      renderizarTodo(data, { mantenerVista });
+      renderizarTodo(data, { mantenerVista, centrar, vistaPrevia });
       symbolActual = symbol;
       timeframeActual = timeframe;
       let nota = "";
@@ -3438,15 +3471,14 @@ function crearPanel(rootEl, opciones = {}) {
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || res.status);
     const velas = d.candles || [];
+    // Agregar velas al final desplaza la escala de tiempo: se guarda el
+    // encuadre actual (centrado, o el que el usuario haya movido mientras
+    // llegaban) y se vuelve a aplicar tal cual, para que no haya salto.
+    const encuadre = chart.timeScale().getVisibleLogicalRange();
     futuroSerie.setData(velas);
     cantidadFuturo = velas.length;
-    if (velas.length) {
-      // Encuadre: algo de pasado analizado a la izquierda y lo que vino después a la derecha.
-      const ultimo = loadedCandles.length - 1;
-      chart.timeScale().setVisibleLogicalRange({
-        from: ultimo - 70,
-        to:   ultimo + Math.min(velas.length, 120) + 8,
-      });
+    if (velas.length && encuadre) {
+      chart.timeScale().setVisibleLogicalRange(encuadre);
     }
     requestAnimationFrame(redrawOverlay);
   }
@@ -3755,12 +3787,12 @@ function crearPanel(rootEl, opciones = {}) {
       }
     });
 
-    btnCargar.addEventListener("click", cargarDatos);
+    btnCargar.addEventListener("click", () => cargarDatos({ centrar: true }));
     btnCargarMas.addEventListener("click", cargarMasHistorial);
 
-    timeframeSelect.addEventListener("keydown", e => { if (e.key === "Enter") cargarDatos(); });
+    timeframeSelect.addEventListener("keydown", e => { if (e.key === "Enter") cargarDatos({ centrar: true }); });
     timeframeSelect.addEventListener("change", () => { timeframeFijadoManual = true; });
-    symbolInput.addEventListener("keydown", e => { if (e.key === "Enter") cargarDatos(); });
+    symbolInput.addEventListener("keydown", e => { if (e.key === "Enter") cargarDatos({ centrar: true }); });
 
     let saltarAutocompletadoUnaVez = false;
 
@@ -4489,11 +4521,15 @@ function actualizarUIModoGrafico() {
   document.getElementById("btn-modo-backtesting").classList.toggle("activo", enBacktesting);
 }
 
-function recargarPaneles() {
+// centrar (por defecto sí): cambio de modo, buscar fecha, clic + Enter → la última
+// vela analizada queda en el centro. Solo la casilla "Ver lo posterior" pasa
+// centrar:false, para respetar el encuadre que el usuario ya tenía.
+function recargarPaneles(opciones = {}) {
   if (!panel1) return;
+  const { centrar = true } = opciones;
   marcarHastaEnPantalla();
-  panel1.cargarDatos();
-  if (modoSplit && panel2) panel2.cargarDatos();
+  panel1.cargarDatos({ centrar });
+  if (modoSplit && panel2) panel2.cargarDatos({ centrar });
 }
 
 function activarModoOnline(opciones = {}) {
@@ -4520,9 +4556,29 @@ async function activarModoBacktesting(opciones = {}) {
   } else {
     actualizarLimiteReproductor();
   }
+  // Con "Ver lo posterior" activa, entrar a Backtesting ya pide lo posterior
+  // a la fecha puesta (antes había que apagar y volver a encender la casilla).
+  const fechaAlEntrar = document.getElementById("fecha-global").value;
+  if (verFuturoCrudo && fechaAlEntrar) futuroCrudo = { hasta: fechaAlEntrar };
   actualizarUIModoGrafico();
   actualizarLinkTablero();
   if (recargar) recargarPaneles();
+}
+
+// Al PAUSAR el replay a mano con "Ver lo posterior" activa, se muestran las
+// velas posteriores a la vela donde quedó. Si había una carga en curso (el
+// paso que estaba corriendo), se espera a que termine para no perder el pedido.
+function mostrarPosteriorAlPausar() {
+  if (!verFuturoCrudo || modoGrafico !== "backtesting") return;
+  const esperar = setInterval(() => {
+    if (cargandoAlgunPanel()) return;
+    clearInterval(esperar);
+    if (reproduciendo || modoGrafico !== "backtesting") return;   // volvió a dar play o cambió de modo
+    const hasta = document.getElementById("fecha-global").value;
+    if (!hasta) return;
+    futuroCrudo = { hasta };
+    recargarPaneles({ centrar: false });   // respeta el encuadre actual
+  }, 100);
 }
 
 window.addEventListener("load", () => {
@@ -4558,11 +4614,11 @@ window.addEventListener("load", () => {
 
   if (arrancaEnBacktesting) {
     activarModoBacktesting({ recargar: false }).then(() => {
-      if (atajoSymbol) panel1.cargarDatos();
+      if (atajoSymbol) panel1.cargarDatos({ centrar: true });
     });
   } else {
     activarModoOnline({ recargar: false });
-    if (atajoSymbol) panel1.cargarDatos();
+    if (atajoSymbol) panel1.cargarDatos({ centrar: true });
   }
 
   // Casilla "Ver lo posterior": al encenderla muestra lo posterior al corte actual;
@@ -4575,7 +4631,7 @@ window.addEventListener("load", () => {
     try { localStorage.setItem("ver_futuro_crudo", verFuturoCrudo ? "1" : "0"); } catch (e) {}
     const hasta = document.getElementById("fecha-global").value;
     futuroCrudo = verFuturoCrudo && hasta ? { hasta } : null;
-    if (modoGrafico === "backtesting" && !reproduciendo) recargarPaneles();
+    if (modoGrafico === "backtesting" && !reproduciendo) recargarPaneles({ centrar: false });
   });
 
   document.getElementById("btn-split").addEventListener("click", toggleSplit);
@@ -4597,7 +4653,8 @@ window.addEventListener("load", () => {
   });
 
   document.getElementById("btn-play-pause").addEventListener("click", () => {
-    reproduciendo ? pausarReproductor() : playReproductor();
+    if (reproduciendo) { pausarReproductor(); mostrarPosteriorAlPausar(); }
+    else playReproductor();
   });
   document.getElementById("btn-paso-atras").addEventListener("click", () => {
     pausarReproductor();
