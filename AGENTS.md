@@ -612,7 +612,7 @@ Solo lo que ayuda a entender la evolución.
 | `c12aab2` | **"Hasta" en hora del servidor MT5** (`api/hora_servidor/`, `hora_servidor_mt5`) y selector en 24 h; el reproductor salta fines de semana en hora del servidor |
 | `4a4d63d` | Secuencia: plazo de retesteo en D1 de 120 a 60 velas |
 | `442fb4e` | Secuencia: panel corto con una sola estructura (puntos de avance + una frase, resto bajo "más"); calibración de H1/H4/M15 sin cambios |
-| (pendiente de push) | Backtesting: tras clic + Enter o buscando a mano fecha/hora se ven las velas posteriores crudas (`api/velas_despues/`) |
+| `e7abef1` | Backtesting: tras clic + Enter o buscando a mano fecha/hora se ven las velas posteriores crudas (`api/velas_despues/`) |
 | `458b5ac` | **Captura rápida de vela** en Backtesting: clic + Enter pega la fecha de la vela y carga (`activarCapturaRapida`) |
 
 **Ramas**: `master`, `feature/sr-fractal` (donde está lo más reciente),
