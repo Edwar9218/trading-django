@@ -4,7 +4,7 @@
 > Basado en el código, la configuración y el historial de git reales.
 > Lo que no pudo determinarse está marcado como **No determinado**.
 >
-> Última sincronización: commit `4a4d63d` + panel de Secuencia de una sola estructura + encuadre centrado del gráfico y "Ver lo posterior" sin reactivar (rama `feature/sr-fractal`; estos dos últimos cambios aún sin commit al sincronizar).
+> Última sincronización: commit `4a4d63d` + panel de Secuencia de una sola estructura (rama `feature/sr-fractal`).
 
 ---
 
@@ -291,19 +291,26 @@ Gráfico: sincronizarWatchlist() → GET /grafico/api/watchlist/ (solo SELECT)
   reproductor y ⏮ ⏭ escriben `.value` por código y NO lo activan); ambos respetan la casilla "Ver lo
   posterior" de la barra de Backtesting (`#chk-futuro`, `verFuturoCrudo`,
   recordada en `localStorage["ver_futuro_crudo"]`, encendida por defecto; al
-  cambiarla se recarga el corte actual con o sin lo posterior, respetando el
-  encuadre). Con la casilla encendida, también se pide lo posterior al **entrar a
-  Backtesting** con fecha puesta (`activarModoBacktesting`) y al **pausar el replay
-  con ⏸** (`mostrarPosteriorAlPausar`, espera a que termine el paso en curso). ⏮ ⏭ y
-  el replay corriendo no lo muestran, para no revelar el futuro mientras se avanza.
-  `cargarDatos` lo atiende solo si el "Hasta" coincide, así cualquier
-  otra carga (replay, otra fecha) lo borra sola. Las velas
+  cambiarla se recarga el corte actual con o sin lo posterior, SIN mover el
+  encuadre: `recargarPaneles({centrar:false})`; al entrar a Backtesting con la
+  casilla activa ya se pide lo posterior, y al PAUSAR el replay con ⏸ se muestra
+  lo posterior a la vela donde quedó, `mostrarPosteriorAlPausar`); `cargarDatos` lo atiende solo si el "Hasta" coincide, así cualquier
+  otra carga (replay, otra fecha, otro modo) lo borra sola. Las velas
   posteriores NO entran en `loadedCandles` ni en ningún cálculo. Los
   indicadores no pueden proyectarse sobre esa zona: `limiteDerecha` recorta
   líneas de canales, KN y S/R (`hastaCorte`) y el canvas se recorta con `clip`
   en `redrawOverlay`. Endpoint: `api/velas_despues/?symbol&timeframe&desde=<time>&cantidad`
   (`fetch_mt5_newer_candles`); también sirve para pasar "qué pasó después" a
   mano junto con `api/datos/?...&hasta=`.
+- **Encuadre al cargar** (`centrarEnUltimaVela`, opción `centrar` de `cargarDatos`
+  y `recargarPaneles`): cada carga "de verdad" (botón Cargar, Enter, cambio
+  Online/Backtesting, buscar fecha, clic + Enter, divisa/timeframe nuevos) deja
+  la última vela analizada en el centro, conservando el zoom del usuario (160
+  velas por defecto; si el ancho previo está fuera de 20-600 usa el defecto).
+  Los pasos del reproductor y ⏮ ⏭ mantienen la posición. La vista se captura
+  ANTES de vaciar/llenar `futuroSerie` (`vistaPrevia`), porque poner o quitar
+  esas velas corre la escala de tiempo. OJO: los listeners de click/keydown le
+  pasan el evento a `cargarDatos`; solo vale `opciones.centrar === true`.
 - **Aviso "Cargando…" sobre el gráfico** (`mostrarVeloCarga` en `cargarDatos`):
   velo con spinner y el texto `Cargando SÍMBOLO TF · hasta fecha…`. Aparece
   solo si la carga pasa de 200 ms y nunca con el reproductor corriendo (si no,
@@ -313,24 +320,9 @@ Gráfico: sincronizarWatchlist() → GET /grafico/api/watchlist/ (solo SELECT)
   página sondea `http://localhost:8000/` y entra sola al tablero cuando el
   servidor responde. Si no existe, el `.bat` abre el tablero directo.
 - **Vela en vivo** (Modo Online): `api/vela_actual/` cada 2 s.
-- **Encuadre al cargar** (`cargarDatos(opciones)` → `renderizarTodo`):
-  - Carga explícita (botón Cargar, Enter en divisa/timeframe, cambio
-    Online↔Backtesting, buscar fecha, clic + Enter) o gráfico nuevo (otra
-    divisa/timeframe) → `centrarEnUltimaVela()`: la última vela analizada queda
-    en el centro de la pantalla, conservando el ancho de zoom previo (si está
-    entre 20 y 600 velas; si no, `VISTA_ANCHO_DEFECTO` = 160). Se pide con
-    `cargarDatos({ centrar: true })`; `recargarPaneles({ centrar })` centra por
-    defecto.
-  - Replay (▶ y ⏮ ⏭) llama `cargarDatos()` sin opciones → conserva la vista
-    (`capturarVista`/`restaurarVista`, relativa a la última vela). Si el usuario
-    movió el gráfico, ese encuadre se respeta.
-  - La casilla "Ver lo posterior" recarga con `centrar:false` (no recentra).
-  - `vistaPrevia` se captura en `cargarDatos` ANTES de vaciar `futuroSerie`, y
-    `cargarFuturo` reaplica el encuadre tras agregar las velas posteriores: poner
-    o quitar velas al final corre la escala de tiempo y movía el gráfico.
-  - `fitContent()` queda solo como respaldo; por `cargarDatos` ya no se alcanza.
-  - En Modo Online la mitad derecha queda vacía tras centrar (no hay futuro): es
-    lo esperado.
+- **Zoom conservado** entre recargas (se captura justo antes de `setData`,
+  relativo a la última vela; `fitContent()` solo al cambiar
+  divisa/timeframe).
 - **Precisión del eje de precio** con los `digits` reales de MT5
   (`symbol_info`), con respaldo inferido de la magnitud si el broker no
   los informa.
@@ -475,11 +467,7 @@ Cosas que no deberían romperse:
     visibles). Quien quiera "ir a una fecha" escribe ahí y dispara
     `change`; ese evento ya recarga los paneles. No crear otro camino de
     carga.
-17. **Encuadre del gráfico**: una carga explícita centra la última vela; el
-    replay y ⏮ ⏭ NO recentran (conservan la vista). Quien agregue un camino de
-    carga nuevo debe elegir a propósito (`centrar: true` o sin opciones). Los
-    listeners de eventos pasan el evento como primer argumento a `cargarDatos`:
-    por eso solo se lee `opciones.centrar === true`.
+
 ---
 
 ## 8. Convenciones
@@ -542,9 +530,6 @@ Cosas que no deberían romperse:
 | Captura rápida solo escucha el mouse, nunca frena eventos ni usa el canvas de dibujo | el arrastre/zoom/paneo y los dibujos quedan exactamente como antes; la marca y la etiqueta son `div` con `pointer-events:none` | `grafico.html` |
 | Casilla "Ver lo posterior" (única casilla de esta función) | pedido expreso del dueño para poder apagarlo; sigue sin haber casilla en la captura rápida en sí | `grafico.html` |
 | Futuro crudo en una serie aparte + recorte de proyecciones de indicadores | las velas posteriores no deben tocar ningún cálculo ni verse "analizadas"; `limiteDerecha` se fija ANTES de dibujar para que nada se proyecte sobre ellas | `grafico.html` |
-| Cargas explícitas centran la última vela; replay y ⏮ ⏭ conservan la vista | al empezar un análisis conviene ver pasado y futuro a partes iguales; durante el replay recentrar a cada vela marearía | `grafico.html` (`cargarDatos`, `recargarPaneles`) |
-| Capturar la vista antes de vaciar/llenar `futuroSerie` y reaplicarla después | agregar o quitar velas al final desplaza la escala de tiempo; leer la vista después guardaba una posición ya movida (y arrastraba el desfase al pasar a Online) | `grafico.html` (`cargarDatos`, `cargarFuturo`) |
-| "Ver lo posterior" se renueva al entrar a Backtesting y al pausar con ⏸ | `futuroCrudo` está atado a un "Hasta" concreto; sin esto la casilla quedaba marcada pero sin efecto hasta apagarla y encenderla | `grafico.html` (`activarModoBacktesting`, `mostrarPosteriorAlPausar`) |
 | `arrancar.bat` abre `cargando.html` antes de levantar nada | el navegador muestra algo de inmediato y entra solo cuando el servidor responde | `arrancar.bat`, `cargando.html` |
 
 ---
@@ -644,8 +629,9 @@ Solo lo que ayuda a entender la evolución.
 | `4a4d63d` | Secuencia: plazo de retesteo en D1 de 120 a 60 velas |
 | `442fb4e` | Secuencia: panel corto con una sola estructura (puntos de avance + una frase, resto bajo "más"); calibración de H1/H4/M15 sin cambios |
 | `e7abef1` | Backtesting: tras clic + Enter o buscando a mano fecha/hora se ven las velas posteriores crudas (`api/velas_despues/`) |
+| `25f7a15` | Backtesting: casilla "Ver lo posterior" |
+| `47cc083` | Encuadre: la última vela analizada queda centrada al cargar; lo posterior también al entrar a Backtesting y al pausar el replay |
 | `458b5ac` | **Captura rápida de vela** en Backtesting: clic + Enter pega la fecha de la vela y carga (`activarCapturaRapida`) |
-| (sin commit) | Gráfico: última vela centrada al cargar; fix del desplazamiento al apagar "Ver lo posterior"; esa casilla se renueva al entrar a Backtesting y al pausar el replay |
 
 **Ramas**: `master`, `feature/sr-fractal` (donde está lo más reciente),
 `optimizacion-performance`.
