@@ -4,7 +4,7 @@
 > Basado en el código, la configuración y el historial de git reales.
 > Lo que no pudo determinarse está marcado como **No determinado**.
 >
-> Última sincronización: commit `4a4d63d` + panel de Secuencia de una sola estructura (rama `feature/sr-fractal`).
+> Última sincronización: commit `efa7301` (botón "Exportar caso") en la rama `feature/sr-fractal`.
 
 ---
 
@@ -75,7 +75,8 @@ propósito — ver Decisiones técnicas.
   flechas de ruptura, cruces de invalidación y niveles R→S/S→R se
   apagaron en el commit `2c7192d`). No borrar ese código: está desactivado
   por decisión, no por estar roto.
-- **Tests**: dos suites JS (`chartview/tests_js/`), tests Django en
+- **Tests**: tres suites JS (`chartview/tests_js/`; la de "Exportar caso" solo
+  cubre los helpers puros, no el armado del JSON ni la descarga), tests Django en
   `chartview/tests.py` (`SRFractalTests`, `BotonTodosTests`) y en
   `dashboard/tests.py` (16 tests: validación contra MT5 con un MT5
   simulado, sincronización tablero↔gráfico, `api/watchlist/`). El resto
@@ -315,6 +316,22 @@ Gráfico: sincronizarWatchlist() → GET /grafico/api/watchlist/ (solo SELECT)
   velo con spinner y el texto `Cargando SÍMBOLO TF · hasta fecha…`. Aparece
   solo si la carga pasa de 200 ms y nunca con el reproductor corriendo (si no,
   titilaría en cada vela). Es `pointer-events:none`, no estorba al ratón.
+- **Exportar caso** (botón `#btn-exportar-caso`, `exportarCasos()` global +
+  `exportarCaso()` por panel): descarga `caso_SIMBOLO_TF_AAAAMMDD_HHMM.json`
+  (`formato: "caso-grafico/1"`) con un caso por pantalla visible. Cada caso
+  tiene `meta`, `analisis` (solo lo sabido hasta la última vela: hasta 500
+  velas, canales, Kalman, KN, S/R Avanzado, S/R Fractal, Secuencia) y
+  `resultado_posterior` (aparte y marcado "MIRA AL FUTURO"): a 12/24/48 velas,
+  máximo que subió, máximo que bajó y cierre, en precio, % y múltiplos de ATR
+  (referencia: cierre de la última vela analizada). En Backtesting trae las
+  velas posteriores aunque "Ver lo posterior" esté apagada; en Online no hay
+  (`disponible: false` con el motivo). Si una de las 2 pantallas no se puede
+  exportar, se exporta la otra y el motivo queda en `avisos`. Los helpers puros
+  (`limpiarParaExport`, `atrSimple`, `resultadoPosterior`) viven entre los
+  marcadores `// ── Exportar caso: helpers puros` y `// Fábrica de paneles`
+  de `grafico.html`: el test los extrae de ahí, **no mover ni renombrar esos
+  marcadores sin actualizar `exportar_caso.test.js`**. `estructuraUnicaSEQ()` la
+  comparten el panel de Secuencia y el export, para que digan siempre lo mismo.
 - **Pantalla de bienvenida al arrancar**: `arrancar.bat` abre
   `cargando.html` de inmediato y levanta servidor, worker y beat; la
   página sondea `http://localhost:8000/` y entra sola al tablero cuando el
@@ -529,6 +546,8 @@ Cosas que no deberían romperse:
 | Captura rápida sin checkbox ni interruptor | pedido expreso del dueño: no llenar el gráfico de checkboxes; Enter siempre pega y carga | `grafico.html` |
 | Captura rápida solo escucha el mouse, nunca frena eventos ni usa el canvas de dibujo | el arrastre/zoom/paneo y los dibujos quedan exactamente como antes; la marca y la etiqueta son `div` con `pointer-events:none` | `grafico.html` |
 | Casilla "Ver lo posterior" (única casilla de esta función) | pedido expreso del dueño para poder apagarlo; sigue sin haber casilla en la captura rápida en sí | `grafico.html` |
+| Exportar caso en dos bloques (`analisis` / `resultado_posterior`) que nunca se mezclan | lo posterior solo sirve para medir; si se mezclara con lo causal, cualquier estudio posterior mentiría (regla 5) | `grafico.html` |
+| Test de los helpers de Exportar caso extrae el código de `grafico.html` entre marcadores | no hay copia que se desactualice y no hace falta build ni framework | `exportar_caso.test.js` |
 | Futuro crudo en una serie aparte + recorte de proyecciones de indicadores | las velas posteriores no deben tocar ningún cálculo ni verse "analizadas"; `limiteDerecha` se fija ANTES de dibujar para que nada se proyecte sobre ellas | `grafico.html` |
 | `arrancar.bat` abre `cargando.html` antes de levantar nada | el navegador muestra algo de inmediato y entra solo cuando el servidor responde | `arrancar.bat`, `cargando.html` |
 
@@ -632,6 +651,7 @@ Solo lo que ayuda a entender la evolución.
 | `25f7a15` | Backtesting: casilla "Ver lo posterior" |
 | `47cc083` | Encuadre: la última vela analizada queda centrada al cargar; lo posterior también al entrar a Backtesting y al pausar el replay |
 | `458b5ac` | **Captura rápida de vela** en Backtesting: clic + Enter pega la fecha de la vela y carga (`activarCapturaRapida`) |
+| `efa7301` | **Botón "Exportar caso"**: JSON por corte con el análisis y, aparte, el resultado posterior a 12/24/48 velas; refactor `estructuraUnicaSEQ()`; test `exportar_caso.test.js` |
 
 **Ramas**: `master`, `feature/sr-fractal` (donde está lo más reciente),
 `optimizacion-performance`.
@@ -658,6 +678,7 @@ Tests:
 python manage.py test
 node chartview/tests_js/fractal_sr.test.js
 node chartview/tests_js/secuencia_fractal.test.js
+node chartview/tests_js/exportar_caso.test.js
 ```
 
 Las suites JS terminan con una línea `OK — …`. Las de los indicadores
