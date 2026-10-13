@@ -288,7 +288,10 @@ Gráfico: sincronizarWatchlist() → GET /grafico/api/watchlist/ (solo SELECT)
   posteriores SIN indicadores (hasta 300, serie `futuroSerie` de colores
   apagados) para ver cómo siguió el precio. `futuroCrudo = {hasta}` lo fija
   Enter o el buscador manual de fecha/hora/minuto (`desdeControles`; el
-  reproductor y ⏮ ⏭ escriben `.value` por código y NO lo activan); `cargarDatos` lo atiende solo si el "Hasta" coincide, así cualquier
+  reproductor y ⏮ ⏭ escriben `.value` por código y NO lo activan); ambos respetan la casilla "Ver lo
+  posterior" de la barra de Backtesting (`#chk-futuro`, `verFuturoCrudo`,
+  recordada en `localStorage["ver_futuro_crudo"]`, encendida por defecto; al
+  cambiarla se recarga el corte actual con o sin lo posterior); `cargarDatos` lo atiende solo si el "Hasta" coincide, así cualquier
   otra carga (replay, otra fecha, otro modo) lo borra sola. Las velas
   posteriores NO entran en `loadedCandles` ni en ningún cálculo. Los
   indicadores no pueden proyectarse sobre esa zona: `limiteDerecha` recorta
@@ -513,6 +516,7 @@ Cosas que no deberían romperse:
 | Captura rápida: escribir `#fecha-global` + `change` en vez de llamar a `cargarDatos` | el `change` ya pausa el replay y recarga todos los paneles; llamar a `cargarDatos` cargaría solo uno y duplicaría lógica | `grafico.html` |
 | Captura rápida sin checkbox ni interruptor | pedido expreso del dueño: no llenar el gráfico de checkboxes; Enter siempre pega y carga | `grafico.html` |
 | Captura rápida solo escucha el mouse, nunca frena eventos ni usa el canvas de dibujo | el arrastre/zoom/paneo y los dibujos quedan exactamente como antes; la marca y la etiqueta son `div` con `pointer-events:none` | `grafico.html` |
+| Casilla "Ver lo posterior" (única casilla de esta función) | pedido expreso del dueño para poder apagarlo; sigue sin haber casilla en la captura rápida en sí | `grafico.html` |
 | Futuro crudo en una serie aparte + recorte de proyecciones de indicadores | las velas posteriores no deben tocar ningún cálculo ni verse "analizadas"; `limiteDerecha` se fija ANTES de dibujar para que nada se proyecte sobre ellas | `grafico.html` |
 | `arrancar.bat` abre `cargando.html` antes de levantar nada | el navegador muestra algo de inmediato y entra solo cuando el servidor responde | `arrancar.bat`, `cargando.html` |
 

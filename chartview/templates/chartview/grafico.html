@@ -141,6 +141,14 @@
     }
     #btn-multitf:hover { border-color: #d9a441; color: #d9a441; }
 
+    /* Casilla "Ver lo posterior" (Backtesting) */
+    #lbl-futuro {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 12px; color: #b2b5be; cursor: pointer; user-select: none;
+      padding-left: 8px; border-left: 1px solid #2a2e39;
+    }
+    #lbl-futuro input { accent-color: #2962ff; cursor: pointer; margin: 0; }
+
     /* ── Reproductor de backtesting (play/pause, paso a paso, velocidad) ── */
     #reproductor {
       display: flex;
@@ -868,6 +876,9 @@
       <select id="fecha-minuto" title="Minuto"></select>
     </span>
     <span id="hora-servidor-info" title="Hora del servidor de MT5"></span>
+    <label id="lbl-futuro" title="Tras clic + Enter o buscar una fecha/hora, muestra a la derecha las velas posteriores sin indicadores">
+      <input type="checkbox" id="chk-futuro" checked> Ver lo posterior
+    </label>
     <div id="reproductor">
       <button id="btn-paso-atras" type="button" title="Retroceder 1 vela">⏮</button>
       <button id="btn-play-pause" type="button" title="Reproducir (avanza solo, vela a vela)">▶</button>
@@ -3369,7 +3380,7 @@ function crearPanel(rootEl, opciones = {}) {
 
       // ¿Esta carga viene de clic + Enter? Solo entonces se muestra lo posterior.
       // Cualquier otro "Hasta" (replay, otra fecha) invalida el pedido.
-      const pideFuturo = modoGrafico === "backtesting" && futuroCrudo !== null
+      const pideFuturo = modoGrafico === "backtesting" && verFuturoCrudo && futuroCrudo !== null
         && futuroCrudo.hasta === hasta && data.candles && data.candles.length > 0;
       if (!pideFuturo) {
         if (futuroCrudo !== null && futuroCrudo.hasta !== hasta) futuroCrudo = null;
@@ -3967,6 +3978,9 @@ let capturaPanelConSeleccion = null;   // solo un panel a la vez tiene vela sele
 // carga (otra fecha, replay, otro modo) tiene otro "Hasta" y lo borra sola.
 let futuroCrudo = null;                // { hasta: "YYYY-MM-DDTHH:MM" } | null
 const FUTURO_CRUDO_VELAS = 300;
+// Casilla "Ver lo posterior": si está apagada, ni clic + Enter ni el buscador
+// manual piden las velas posteriores. Se recuerda entre sesiones (localStorage).
+let verFuturoCrudo = (() => { try { return localStorage.getItem("ver_futuro_crudo") !== "0"; } catch (e) { return true; } })();
 
 function activarCapturaRapida(p) {
   const dos = n => String(n).padStart(2, "0");
@@ -4090,7 +4104,7 @@ function activarCapturaRapida(p) {
     const valor = fechaVela(seleccion.time).valor;
     limpiar();
     const campo = document.getElementById("fecha-global");
-    futuroCrudo = { hasta: valor };                   // la carga que sigue mostrará lo posterior, crudo
+    if (verFuturoCrudo) futuroCrudo = { hasta: valor };   // la carga que sigue mostrará lo posterior, crudo
     campo.value = valor;                              // actualiza día/hora/minuto visibles
     campo.dispatchEvent(new Event("change"));         // mismo camino que tipear la fecha: pausa, y recarga los paneles
   });
@@ -4167,7 +4181,7 @@ function actualizarLinkTablero() {
     // el gráfico se corta ahí y se muestran, crudas, las velas posteriores.
     // (El reproductor y los pasos ⏮ ⏭ escriben `.value` por código, sin pasar
     // por aquí, así que ellos no lo activan.) Solo en Backtesting y con fecha.
-    if (modoGrafico === "backtesting" && valor) futuroCrudo = { hasta: valor };
+    if (modoGrafico === "backtesting" && valor && verFuturoCrudo) futuroCrudo = { hasta: valor };
     oculto.dispatchEvent(new Event("change"));
   }
   [dia, selHora, selMin].forEach((el) => el.addEventListener("change", desdeControles));
@@ -4550,6 +4564,19 @@ window.addEventListener("load", () => {
     activarModoOnline({ recargar: false });
     if (atajoSymbol) panel1.cargarDatos();
   }
+
+  // Casilla "Ver lo posterior": al encenderla muestra lo posterior al corte actual;
+  // al apagarla lo quita. Se recarga (no se dibuja a mano) para que los
+  // indicadores recuperen o pierdan sus proyecciones con el mismo camino de siempre.
+  const chkFuturo = document.getElementById("chk-futuro");
+  chkFuturo.checked = verFuturoCrudo;
+  chkFuturo.addEventListener("change", () => {
+    verFuturoCrudo = chkFuturo.checked;
+    try { localStorage.setItem("ver_futuro_crudo", verFuturoCrudo ? "1" : "0"); } catch (e) {}
+    const hasta = document.getElementById("fecha-global").value;
+    futuroCrudo = verFuturoCrudo && hasta ? { hasta } : null;
+    if (modoGrafico === "backtesting" && !reproduciendo) recargarPaneles();
+  });
 
   document.getElementById("btn-split").addEventListener("click", toggleSplit);
   document.getElementById("btn-modo-online").addEventListener("click", () => activarModoOnline());
