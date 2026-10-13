@@ -105,7 +105,7 @@
     }
     #controles-backtesting.visible { display: flex; }
 
-    #btn-split {
+    #btn-split, #btn-exportar-caso {
       background: transparent;
       border: 1px solid #363c4e;
       border-radius: 6px;
@@ -115,7 +115,8 @@
       cursor: pointer;
       transition: all .15s;
     }
-    #btn-split:hover { border-color: #2962ff; color: #2962ff; }
+    #btn-split:hover, #btn-exportar-caso:hover { border-color: #2962ff; color: #2962ff; }
+    #btn-exportar-caso:disabled { opacity: .6; cursor: default; }
 
     #sync-controls { display: flex; align-items: center; gap: 4px; }
     .sync-btn, #sync-modo {
@@ -775,7 +776,7 @@
   #selector-fecha-hora input, #selector-fecha-hora select { padding: 3px 5px; font-size: 12px; }
   #hora-servidor-info { font-size: 11px; color: #848e9c; white-space: nowrap; }
   .modo-btn { padding: 3px 10px; }
-  #btn-split, #btn-multitf, #btn-enfoque { padding: 3px 10px; }
+  #btn-split, #btn-exportar-caso, #btn-multitf, #btn-enfoque { padding: 3px 10px; }
   #reproductor button { width: 28px; height: 24px; }
   #velocidad-reproductor { padding: 3px 5px; }
   #btn-enfoque {
@@ -892,6 +893,7 @@
     </div>
   </div>
   <button id="btn-split">⊞ 2 pantallas</button>
+  <button id="btn-exportar-caso" type="button" title="Descarga un JSON con el análisis de este corte (velas, canales, Kalman, indicadores y estado de la Secuencia) y, aparte, lo que pasó después">⬇ Exportar caso</button>
   <div id="sync-controls" style="display:none">
     <button type="button" id="sync-zoom" class="sync-btn activo" title="Zoom y desplazamiento: lo que hagas en un gráfico se replica en el otro">🔗 Zoom/Scroll</button>
     <button type="button" id="sync-cross" class="sync-btn activo" title="Crosshair sincronizado entre las 2 pantallas">✛ Crosshair</button>
@@ -1128,6 +1130,93 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// ── Exportar caso: helpers puros ───────────────────────────
+// Sin DOM ni estado del gráfico, así se prueban con Node (ver tests al final del
+// pedido). El armado del caso vive en `exportarCaso` dentro de crearPanel.
+const EXPORT_VELAS_ANALISIS = 500;          // velas de contexto que se guardan en `analisis`
+const EXPORT_HORIZONTES = [12, 24, 48];     // velas hacia adelante en `resultado_posterior`
+const EXPORT_AVISO_FUTURO = "MIRA AL FUTURO: es lo que pasó DESPUÉS del corte. Sirve para medir qué tal funcionó el análisis; no debe alimentar ningún indicador ni decisión en vivo.";
+
+// Deja un valor listo para JSON: NaN/inf → null, funciones fuera, ciclos cortados y
+// series largas resumidas (las líneas `*points` quedan en largo + último punto; el
+// resto de arreglos de más de 40 elementos, en largo + los últimos 40).
+function limpiarParaExport(v, clave = "", pila = new Set()) {
+  if (v === null || v === undefined) return null;
+  const t = typeof v;
+  if (t === "number") return Number.isFinite(v) ? v : null;
+  if (t === "string" || t === "boolean") return v;
+  if (t !== "object") return undefined;               // funciones, símbolos…
+  if (pila.has(v)) return "[ciclo]";
+  pila.add(v);
+  let salida;
+  if (Array.isArray(v)) {
+    if (/points$/i.test(clave)) {
+      salida = { n: v.length, ultimo: limpiarParaExport(v[v.length - 1], "", pila) };
+    } else if (v.length > 40) {
+      salida = { n: v.length, ultimos: v.slice(-40).map(x => limpiarParaExport(x, "", pila)) };
+    } else {
+      salida = v.map(x => { const r = limpiarParaExport(x, "", pila); return r === undefined ? null : r; });
+    }
+  } else {
+    salida = {};
+    for (const k of Object.keys(v)) {
+      const r = limpiarParaExport(v[k], k, pila);
+      if (r !== undefined) salida[k] = r;
+    }
+  }
+  pila.delete(v);                                     // una referencia repetida (no circular) sí se exporta
+  return salida;
+}
+
+// ATR simple (media del rango verdadero de las últimas n velas). Solo para poner
+// los movimientos del export en unidades comparables entre divisas.
+function atrSimple(velas, n = 14) {
+  if (!velas || velas.length < n + 1) return null;
+  let suma = 0;
+  for (let i = velas.length - n; i < velas.length; i++) {
+    const c = velas[i], previo = velas[i - 1].close;
+    suma += Math.max(c.high - c.low, Math.abs(c.high - previo), Math.abs(c.low - previo));
+  }
+  return suma / n;
+}
+
+// Qué hizo el precio después del corte, medido desde el cierre de la última vela
+// analizada. Es neutral (cuánto subió y cuánto bajó como máximo): no presupone
+// una dirección de entrada.
+function resultadoPosterior(velas, futuro, atr) {
+  const redondear = x => Math.round(x * 1e8) / 1e8;
+  const ref = velas[velas.length - 1];
+  const horizontes = EXPORT_HORIZONTES.map(h => {
+    if (futuro.length < h) return { velas: h, completo: false };
+    const tramo = futuro.slice(0, h);
+    const maximo = Math.max(...tramo.map(c => c.high));
+    const minimo = Math.min(...tramo.map(c => c.low));
+    const cierre = tramo[h - 1].close;
+    const r = {
+      velas: h, completo: true, cierre,
+      delta_cierre: redondear(cierre - ref.close),
+      delta_cierre_pct: redondear((cierre - ref.close) / ref.close * 100),
+      maximo_subio: redondear(maximo - ref.close),
+      maximo_bajo: redondear(ref.close - minimo),
+    };
+    if (atr) {
+      r.delta_cierre_en_atr = redondear((cierre - ref.close) / atr);
+      r.maximo_subio_en_atr = redondear((maximo - ref.close) / atr);
+      r.maximo_bajo_en_atr = redondear((ref.close - minimo) / atr);
+    }
+    return r;
+  });
+  return {
+    aviso: EXPORT_AVISO_FUTURO,
+    disponible: true,
+    referencia: { time: ref.time, close: ref.close },
+    atr14: atr,
+    velas_disponibles: futuro.length,
+    horizontes,
+    velas: futuro,
+  };
+}
+
 // ══════════════════════════════════════════════════════════
 // Fábrica de paneles: cada pantalla (1 o 2) es una instancia
 // independiente con su propio chart, símbolo, timeframe, canales,
@@ -1323,6 +1412,10 @@ function crearPanel(rootEl, opciones = {}) {
   let futuroSerie = null;
   let limiteDerecha = null;
   let cantidadFuturo = 0;
+  let futuroVelas = [];          // velas posteriores del corte actual (solo para exportar el caso)
+  let digitsActual = null;       // decimales del símbolo cargado
+  let ultimasSenales = null;     // data.signals de la última carga
+  let ultimoSMF = null;          // data.smf de la última carga
   let loadedCandles = [];
   let symbolActual = null, timeframeActual = null;
   let cargandoDatos = false, cargandoMas = false;
@@ -2794,6 +2887,19 @@ function crearPanel(rootEl, opciones = {}) {
       </div>`;
   }
 
+  // La estructura que muestra el panel: la viva más avanzada de cualquier sentido;
+  // si no hay viva, la cerrada más reciente. Lo usan el panel y el export del caso,
+  // para que ambos digan siempre lo mismo.
+  function estructuraUnicaSEQ() {
+    if (!currentSEQ) return null;
+    const ord = window.SecuenciaFractal.ORDEN_ESTADOS;
+    const cands = [currentSEQ.mejorAlcista, currentSEQ.mejorBajista].filter(Boolean);
+    const vivas = cands.filter(s => !s.cerrado);
+    return vivas.length
+      ? vivas.reduce((a, b) => (ord.indexOf(b.estado) > ord.indexOf(a.estado) ? b : a))
+      : cands.reduce((a, b) => (!a || b.cierreIdx > a.cierreIdx ? b : a), null);
+  }
+
   // ── Panel 13: una línea por sentido; lo demás, bajo "más" ──
   function renderizarPanelSEQ() {
     if (!mostrarSEQ) { seqPanelEl.classList.remove("show"); return; }
@@ -2802,15 +2908,7 @@ function crearPanel(rootEl, opciones = {}) {
 
     // Una sola estructura a la vez (dos a la vez confundían): la viva más
     // avanzada de cualquier sentido; si no hay viva, la cerrada más reciente.
-    let unica = null;
-    if (currentSEQ) {
-      const ord = window.SecuenciaFractal.ORDEN_ESTADOS;
-      const cands = [currentSEQ.mejorAlcista, currentSEQ.mejorBajista].filter(Boolean);
-      const vivas = cands.filter(s => !s.cerrado);
-      unica = vivas.length
-        ? vivas.reduce((a, b) => (ord.indexOf(b.estado) > ord.indexOf(a.estado) ? b : a))
-        : cands.reduce((a, b) => (!a || b.cierreIdx > a.cierreIdx ? b : a), null);
-    }
+    const unica = estructuraUnicaSEQ();
     const cuerpo = !unica
       ? `<div class="seq-empty">Sin estructura en curso.<br>Prueba "Cargar más historial".</div>`
       : `<div class="seq-body">${bloqueSEQ(unica, unica.dir)}</div>`;
@@ -3238,6 +3336,9 @@ function crearPanel(rootEl, opciones = {}) {
     console.log(`[grafico] precio — digits de MT5: ${data.digits} · precisión aplicada: ${precision} decimales`);
 
     candleSerie.setData(data.candles);
+    digitsActual = precision;
+    ultimasSenales = data.signals || null;
+    ultimoSMF = data.smf || null;
 
     currentChannels = data.channels || [];
     actualizarTogglesDisponibles();
@@ -3413,6 +3514,7 @@ function crearPanel(rootEl, opciones = {}) {
 
       // ¿Esta carga viene de clic + Enter? Solo entonces se muestra lo posterior.
       // Cualquier otro "Hasta" (replay, otra fecha) invalida el pedido.
+      futuroVelas = [];   // lo reponen cargarFuturo (si se pide) o el export
       const pideFuturo = modoGrafico === "backtesting" && verFuturoCrudo && futuroCrudo !== null
         && futuroCrudo.hasta === hasta && data.candles && data.candles.length > 0;
       if (!pideFuturo) {
@@ -3460,7 +3562,7 @@ function crearPanel(rootEl, opciones = {}) {
   // Trae las velas posteriores al corte y las dibuja CRUDAS en `futuroSerie`.
   // Nada de esto entra en loadedCandles ni en ningún cálculo: los indicadores
   // solo ven hasta el corte, igual que antes.
-  async function cargarFuturo(symbol, timeframe) {
+  async function traerFuturo(symbol, timeframe) {
     const ultima = loadedCandles[loadedCandles.length - 1];
     const params = new URLSearchParams({
       symbol, timeframe, desde: ultima.time, cantidad: FUTURO_CRUDO_VELAS,
@@ -3470,7 +3572,12 @@ function crearPanel(rootEl, opciones = {}) {
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || res.status);
-    const velas = d.candles || [];
+    return d.candles || [];
+  }
+
+  async function cargarFuturo(symbol, timeframe) {
+    const velas = await traerFuturo(symbol, timeframe);
+    futuroVelas = velas;
     // Agregar velas al final desplaza la escala de tiempo: se guarda el
     // encuadre actual (centrado, o el que el usuario haya movido mientras
     // llegaban) y se vuelve a aplicar tal cual, para que no haya salto.
@@ -3971,7 +4078,118 @@ function crearPanel(rootEl, opciones = {}) {
     }
   }
 
+  // ── Exportar caso ──
+  // Foto del análisis en el corte actual, para estudiarla o medirla después. Va en
+  // DOS bloques que nunca se mezclan: `analisis` (solo lo que se sabía hasta la
+  // última vela; es lo único que puede alimentar una decisión) y
+  // `resultado_posterior` (lo que pasó después; solo sirve para medir).
+  async function exportarCaso() {
+    if (!loadedCandles.length || !symbolActual) throw new Error("Primero carga un gráfico");
+    if (cargandoDatos) throw new Error("Espera a que termine la carga");
+
+    const velas = loadedCandles;
+    const ultima = velas[velas.length - 1];
+    const ultimoDe = a => (a && a.length ? a[a.length - 1] : null);
+
+    // Velas posteriores: las del corte actual si ya están; si no, y estamos en
+    // Backtesting, se piden (aunque "Ver lo posterior" esté apagada: exportar es un
+    // pedido explícito). En Online no existen.
+    let futuro = futuroVelas;
+    let notaFuturo = null;
+    if (!futuro.length) {
+      if (modoGrafico !== "backtesting") notaFuturo = "Modo Online: todavía no hay velas posteriores.";
+      else {
+        try { futuro = await traerFuturo(symbolActual, timeframeActual); }
+        catch (e) { notaFuturo = "No se pudieron traer las velas posteriores: " + e.message; }
+      }
+    }
+
+    const atr = atrSimple(velas, 14);
+    const desde = Math.max(0, velas.length - EXPORT_VELAS_ANALISIS);
+
+    const kal = currentKalman;
+    const segFinal = kal && kal.segments ? ultimoDe(kal.segments) : null;
+    const kalman = kal ? {
+      tendencia: ultimasSenales ? ultimasSenales.kalman_trend : null,
+      ultimo_giro_alcista: ultimoDe(kal.flips_up),
+      ultimo_giro_bajista: ultimoDe(kal.flips_down),
+      valor_final: segFinal ? ultimoDe(segFinal.points) : null,
+      color_tramo_final: segFinal ? segFinal.color : null,
+    } : null;
+
+    const canales = currentChannels.map(ch => ({
+      label: ch.label, direccion: ch.direction, calidad: ch.quality,
+      pivote1: ch.pivot1, pivote2: ch.pivot2,
+      borde_base_final: ultimoDe(ch.base_points),
+      borde_paralelo_final: ultimoDe(ch.par_points),
+      medio_final: ultimoDe(ch.mid_points),
+    }));
+
+    let secuencia = null;
+    if (currentSEQ) {
+      const unica = estructuraUnicaSEQ();
+      let mostrada = null;
+      if (unica) {
+        const pasos = etapasDe(unica);
+        const f = fraseSEQ(unica, unica.dir, pasos);
+        if (unica.estado === "CONFIRMATION") pasos[5].estado = "curso";   // igual que el panel
+        mostrada = Object.assign({}, limpiarParaExport(unica), {
+          pasos: pasos.map(x => ({ etapa: x.nom, estado: x.estado, detalle: x.det })),
+          frase: f.txt,
+        });
+      }
+      secuencia = {
+        estructura_mostrada: mostrada,
+        actual: limpiarParaExport(currentSEQ.actual),
+        mejor_alcista: limpiarParaExport(currentSEQ.mejorAlcista),
+        mejor_bajista: limpiarParaExport(currentSEQ.mejorBajista),
+        stats: limpiarParaExport(currentSEQ.stats),
+        ultima_vela_idx: currentSEQ.lastIdx,
+        eventos_recientes: limpiarParaExport((currentSEQ.eventos || []).slice(-20)),
+      };
+    }
+
+    return {
+      meta: {
+        simbolo: symbolActual,
+        timeframe: timeframeActual,
+        hasta: document.getElementById("fecha-global").value || null,
+        modo: modoGrafico,
+        digits: digitsActual,
+        horas: "Hora del servidor MT5: `time` son segundos Unix contados con ese reloj, sin conversión de zona.",
+        velas_total_cargadas: velas.length,
+        velas_exportadas: velas.length - desde,
+        primer_indice_exportado: desde,
+        nota_indices: "Los índices de la Secuencia (idx, lastIdx, cierreIdx) cuentan sobre TODAS las velas cargadas; réstales primer_indice_exportado para ubicarlos en `velas`.",
+        capas_visibles: {
+          kalman: mostrarKalman, kn: mostrarKN, sr_avanzado: mostrarSR,
+          sr_fractal: mostrarSRF, secuencia: mostrarSEQ, relleno: mostrarRelleno,
+          tablero_posicion: mostrarPosicionBoard,
+        },
+      },
+      analisis: {
+        precio_cierre: ultima.close,
+        ultima_vela: ultima,
+        atr14: atr,
+        velas: velas.slice(desde),
+        canales,
+        posicion_canales: limpiarParaExport(currentPosicionCanales),
+        senales_servidor: limpiarParaExport(ultimasSenales),
+        kalman,
+        smf: limpiarParaExport(ultimoSMF),
+        kn: limpiarParaExport(currentKN),
+        sr_avanzado: limpiarParaExport(currentSR),
+        sr_fractal: limpiarParaExport(currentSRF),
+        secuencia,
+      },
+      resultado_posterior: futuro.length
+        ? resultadoPosterior(velas, futuro, atr)
+        : { aviso: EXPORT_AVISO_FUTURO, disponible: false, motivo: notaFuturo || "No hay velas posteriores para este corte (es la última vela)." },
+    };
+  }
+
   return {
+    exportarCaso,
     init, cargarDatos, resize: resizeOverlayCanvas, symbolInput, setSymbol, setTimeframe, actualizarOpciones,
     getChart: () => chart, getCandleSerie: () => candleSerie,
     getChartEl: () => chartPlot, getCandles: () => loadedCandles,
@@ -4524,6 +4742,40 @@ function actualizarUIModoGrafico() {
 // centrar (por defecto sí): cambio de modo, buscar fecha, clic + Enter → la última
 // vela analizada queda en el centro. Solo la casilla "Ver lo posterior" pasa
 // centrar:false, para respetar el encuadre que el usuario ya tenía.
+// Descarga un JSON con el caso de cada pantalla visible (1 o 2 casos en el mismo
+// archivo). Solo lee el estado del gráfico; salvo traer las velas posteriores en
+// Backtesting, no pide nada pesado ni recalcula.
+async function exportarCasos() {
+  const boton = document.getElementById("btn-exportar-caso");
+  const textoOriginal = "⬇ Exportar caso";
+  const paneles = [panel1].concat(modoSplit && panel2 ? [panel2] : []);
+  boton.disabled = true;
+  boton.textContent = "Exportando…";
+  try {
+    const casos = [];
+    for (const pnl of paneles) casos.push(await pnl.exportarCaso());
+    const archivo = { formato: "caso-grafico/1", exportado_en: new Date().toISOString(), casos };
+    const m = casos[0].meta;
+    const corte = new Date(casos[0].analisis.ultima_vela.time * 1000)
+      .toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "_");   // `time` ya es hora del servidor: se lee como UTC
+    const blob = new Blob([JSON.stringify(archivo, null, 1)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `caso_${m.simbolo}_${m.timeframe}_${corte}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    boton.textContent = "✓ Exportado";
+  } catch (e) {
+    console.error("[exportar caso]", e);
+    boton.textContent = "⚠ " + (e.message || "No se pudo exportar");
+  } finally {
+    setTimeout(() => { boton.textContent = textoOriginal; boton.disabled = false; }, 2500);
+  }
+}
+
 function recargarPaneles(opciones = {}) {
   if (!panel1) return;
   const { centrar = true } = opciones;
@@ -4635,6 +4887,7 @@ window.addEventListener("load", () => {
   });
 
   document.getElementById("btn-split").addEventListener("click", toggleSplit);
+  document.getElementById("btn-exportar-caso").addEventListener("click", exportarCasos);
   document.getElementById("btn-modo-online").addEventListener("click", () => activarModoOnline());
   document.getElementById("btn-modo-backtesting").addEventListener("click", () => activarModoBacktesting());
 
