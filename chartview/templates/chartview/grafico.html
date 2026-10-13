@@ -4739,12 +4739,11 @@ function actualizarUIModoGrafico() {
   document.getElementById("btn-modo-backtesting").classList.toggle("activo", enBacktesting);
 }
 
-// centrar (por defecto sí): cambio de modo, buscar fecha, clic + Enter → la última
-// vela analizada queda en el centro. Solo la casilla "Ver lo posterior" pasa
-// centrar:false, para respetar el encuadre que el usuario ya tenía.
 // Descarga un JSON con el caso de cada pantalla visible (1 o 2 casos en el mismo
 // archivo). Solo lee el estado del gráfico; salvo traer las velas posteriores en
-// Backtesting, no pide nada pesado ni recalcula.
+// Backtesting, no pide nada pesado ni recalcula. Si una de las 2 pantallas no se
+// puede exportar (p. ej. aún sin gráfico cargado), se exporta la otra y el motivo
+// queda en `avisos`; solo falla del todo si ninguna se puede.
 async function exportarCasos() {
   const boton = document.getElementById("btn-exportar-caso");
   const textoOriginal = "⬇ Exportar caso";
@@ -4753,8 +4752,18 @@ async function exportarCasos() {
   boton.textContent = "Exportando…";
   try {
     const casos = [];
-    for (const pnl of paneles) casos.push(await pnl.exportarCaso());
+    const avisos = [];
+    let primerError = null;
+    for (let i = 0; i < paneles.length; i++) {
+      try { casos.push(await paneles[i].exportarCaso()); }
+      catch (e) {
+        primerError = primerError || e;
+        avisos.push(`Pantalla ${i + 1} no exportada: ${e.message || e}`);
+      }
+    }
+    if (!casos.length) throw primerError;
     const archivo = { formato: "caso-grafico/1", exportado_en: new Date().toISOString(), casos };
+    if (avisos.length) archivo.avisos = avisos;
     const m = casos[0].meta;
     const corte = new Date(casos[0].analisis.ultima_vela.time * 1000)
       .toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "_");   // `time` ya es hora del servidor: se lee como UTC
@@ -4767,7 +4776,7 @@ async function exportarCasos() {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-    boton.textContent = "✓ Exportado";
+    boton.textContent = avisos.length ? `✓ Exportado (${casos.length} de ${paneles.length})` : "✓ Exportado";
   } catch (e) {
     console.error("[exportar caso]", e);
     boton.textContent = "⚠ " + (e.message || "No se pudo exportar");
@@ -4776,6 +4785,9 @@ async function exportarCasos() {
   }
 }
 
+// centrar (por defecto sí): cambio de modo, buscar fecha, clic + Enter → la última
+// vela analizada queda en el centro. Solo la casilla "Ver lo posterior" pasa
+// centrar:false, para respetar el encuadre que el usuario ya tenía.
 function recargarPaneles(opciones = {}) {
   if (!panel1) return;
   const { centrar = true } = opciones;
