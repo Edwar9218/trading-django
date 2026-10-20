@@ -3794,6 +3794,10 @@ function crearPanel(rootEl, opciones = {}) {
       getActiveTool: () => activeTool,
       hayDibujoBajoCursor: () => !!hoverMatch,
       estaCargando: () => cargandoDatos,
+      // Lo posterior al corte vive en su propia serie y arreglo: se entregan
+      // para que clic + Enter también funcione sobre esas velas.
+      getFuturoSerie: () => futuroSerie,
+      getFuturoVelas: () => futuroVelas,
     });
 
     // Cualquier cambio de tamaño del contenedor (ventana, split screen,
@@ -4243,8 +4247,7 @@ function activarCapturaRapida(p) {
   const enBacktesting = () => modoGrafico === "backtesting";
   const activa = () => enBacktesting() && !reproduciendo;
 
-  function existeVela(t) {
-    const v = p.getCandles();
+  function estaEn(v, t) {
     let lo = 0, hi = v.length - 1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
@@ -4253,6 +4256,9 @@ function activarCapturaRapida(p) {
     }
     return false;
   }
+  // La vela puede estar en lo analizado o en lo posterior al corte ("futuro
+  // crudo"). Ambos arreglos vienen ordenados por tiempo.
+  const existeVela = t => estaEn(p.getCandles(), t) || estaEn(p.getFuturoVelas(), t);
 
   // Elementos visuales: nunca capturan el mouse (pointer-events:none).
   const base = "position:absolute;pointer-events:none;display:none;z-index:5;";
@@ -4301,7 +4307,10 @@ function activarCapturaRapida(p) {
   // 1) Vela bajo el cursor + etiqueta.
   p.chart.subscribeCrosshairMove(param => {
     bajoCursor = null;
-    if (!activa() || !param.point || typeof param.time !== "number" || !param.seriesData.get(p.candleSerie)) {
+    // Una vela posterior al corte se dibuja en `futuroSerie`, no en `candleSerie`:
+    // se aceptan las dos, si no el clic sobre lo posterior nunca encontraba vela.
+    const sobreVela = param.seriesData && (param.seriesData.get(p.candleSerie) || param.seriesData.get(p.getFuturoSerie()));
+    if (!activa() || !param.point || typeof param.time !== "number" || !sobreVela) {
       ocultarEtiqueta();
       return;
     }
