@@ -4,7 +4,7 @@
 > Basado en el código, la configuración y el historial de git reales.
 > Lo que no pudo determinarse está marcado como **No determinado**.
 >
-> Última sincronización: commit `efa7301` (botón "Exportar caso") en la rama `feature/sr-fractal`.
+> Última sincronización: commit `dd74dd2` (arranque con túnel privado) en la rama `feature/sr-fractal`.
 
 ---
 
@@ -61,6 +61,9 @@ propósito — ver Decisiones técnicas.
   Secuencia estructural.
 - Persistencia de dibujos por usuario + divisa + temporalidad.
 - Preferencias de checkboxes persistidas por usuario (11 campos).
+- Acceso desde otro equipo por un **túnel privado** (Microsoft Dev Tunnels):
+  `arrancarTunnel.bat` lo levanta junto al resto. Probado por el dueño desde el
+  celular con datos móviles, funcionando.
 
 ### Parcialmente implementado
 - **Herramientas de dibujo**: ⚠️ **el README está desactualizado acá.**
@@ -119,6 +122,7 @@ Detectadas en `requirements.txt`, `settings.py` y los templates.
 | Config | python-dotenv | `>=1.0` |
 | Frontend charting | lightweight-charts | `4.1.3` (CDN unpkg) |
 | Frontend | JS vanilla, sin framework ni build | — |
+| Túnel (opcional) | CLI `devtunnel` (Microsoft Dev Tunnels, vista previa pública) | 1.0.2115 (la que usa el dueño) |
 
 **Sin sistema de build de frontend**: no hay `package.json`, webpack ni
 npm. Los `.js` se sirven como estáticos de Django y se prueban con
@@ -144,6 +148,8 @@ drawings/        persistencia de dibujos
 templates/       base.html
 broker/          cola de Celery en disco (in/out/processed, gitignored)
 cargando.html    pantalla de bienvenida que abre arrancar.bat (ver §5)
+arrancar.bat / apagar.bat                arranque y apagado en 3 ventanas CMD, sin túnel
+arrancarTunnel.bat / apagarTunnel.bat    lo mismo + túnel privado (4 ventanas)
 ```
 
 `core/` y `chartview/` no tienen migraciones propias con modelos:
@@ -283,7 +289,9 @@ Gráfico: sincronizarWatchlist() → GET /grafico/api/watchlist/ (solo SELECT)
   botón. La selección se descarta si cambia divisa/temporalidad o si la
   vela ya no está cargada. Código: `activarCapturaRapida()` en
   `grafico.html` (bloque entre `// ── Captura rápida: inicio` y `fin`),
-  con una sola llamada desde `init()` de `crearPanel`.
+  con una sola llamada desde `init()` de `crearPanel`. Funciona también sobre las
+  velas posteriores del futuro crudo (`futuroSerie` / `futuroVelas`, que esa llamada
+  le entrega): clic + Enter sobre una de ellas vuelve a cortar el gráfico en esa vela.
 - **Futuro crudo** (Backtesting, tras clic + Enter): el gráfico se corta en la
   vela elegida, con todos sus indicadores, y a la derecha aparecen las velas
   posteriores SIN indicadores (hasta 300, serie `futuroSerie` de colores
@@ -336,6 +344,20 @@ Gráfico: sincronizarWatchlist() → GET /grafico/api/watchlist/ (solo SELECT)
   `cargando.html` de inmediato y levanta servidor, worker y beat; la
   página sondea `http://localhost:8000/` y entra sola al tablero cuando el
   servidor responde. Si no existe, el `.bat` abre el tablero directo.
+- **Acceso remoto por túnel privado** (`arrancarTunnel.bat` / `apagarTunnel.bat`):
+  igual que `arrancar.bat` pero con una cuarta ventana, `Tunel - devtunnel`, que
+  ejecuta `devtunnel host tablero.use2`. El túnel se crea una sola vez con
+  `devtunnel create tablero` + `devtunnel port create tablero -p 8000 --protocol http`
+  (devtunnel le agrega la región al nombre: el ID queda `tablero.use2`). Es
+  **privado**: solo entra la cuenta de GitHub que lo creó. El link
+  (`https://<id>-8000.use2.devtunnels.ms`) sale en la ventana del túnel; se arma con
+  el ID del túnel, así que se espera estable mientras exista (sin verificar entre
+  reinicios). En el `.env` hay que sumar `.devtunnels.ms` a `DJANGO_ALLOWED_HOSTS`.
+  El `.bat` agrega `C:\devtunnel` al PATH de su proceso (el doble clic puede heredar un
+  PATH viejo) y, si no encuentra la CLI, omite el túnel y arranca el resto. Los dos
+  juegos de `.bat` usan los mismos títulos de ventana: `apagarTunnel.bat` apaga
+  ambos modos, `apagar.bat` no cierra el túnel. No arrancar los dos juegos a la vez
+  (puerto 8000 y cola de Celery).
 - **Vela en vivo** (Modo Online): `api/vela_actual/` cada 2 s.
 - **Zoom conservado** entre recargas (se captura justo antes de `setData`,
   relativo a la última vela; `fitContent()` solo al cambiar
@@ -550,6 +572,10 @@ Cosas que no deberían romperse:
 | Test de los helpers de Exportar caso extrae el código de `grafico.html` entre marcadores | no hay copia que se desactualice y no hace falta build ni framework | `exportar_caso.test.js` |
 | Futuro crudo en una serie aparte + recorte de proyecciones de indicadores | las velas posteriores no deben tocar ningún cálculo ni verse "analizadas"; `limiteDerecha` se fija ANTES de dibujar para que nada se proyecte sobre ellas | `grafico.html` |
 | `arrancar.bat` abre `cargando.html` antes de levantar nada | el navegador muestra algo de inmediato y entra solo cuando el servidor responde | `arrancar.bat`, `cargando.html` |
+| Túnel privado con `devtunnel` para el acceso desde otra ciudad | no abre puertos del router ni deja el puerto público; solo entra la cuenta dueña del túnel. NUNCA `--allow-anonymous` | `arrancarTunnel.bat` |
+| Dos juegos de `.bat` (con y sin túnel) con los mismos títulos de ventana | el dueño no siempre usa el túnel; con títulos iguales `apagarTunnel.bat` apaga ambos modos | `arrancar*.bat`, `apagar*.bat` |
+| `arrancarTunnel.bat` suma `C:\devtunnel` al PATH de su proceso | el doble clic puede heredar un PATH viejo y no ver lo agregado después; las ventanas hijas lo heredan | `arrancarTunnel.bat` |
+| Arranque desde VS Code (`tasks.json` con `runOn: folderOpen`) probado y descartado | con el sistema ya corriendo por `.bat`, abrir el proyecto en VS Code lanzaba un segundo servidor, worker/beat (tareas duplicadas) y túnel | historial (`c82c527` → `dd74dd2`) |
 
 ---
 
@@ -594,6 +620,17 @@ Cosas que no deberían romperse:
     resuelve solo; los sugiere y hay que escribirlos exactos.
 14. **Atajo `?timeframe=`**: si la temporalidad no está en `_TF_MAP` se
     ignora (el selector no la agrega).
+15. **El túnel depende de un servicio en vista previa pública** (Dev Tunnels: sin
+    SLA, pensado para pruebas). Límites vistos con `devtunnel limits`: 5 GB de
+    ancho de banda por usuario cada 30 días y 20 MB/s; un túnel sin uso caduca a
+    los 30 días. El Modo Online (vela en vivo cada 2 s) y el reproductor de
+    Backtesting (recarga `/datos` en cada paso) son lo que más consume. Alternativa
+    evaluada, sin probar: Tailscale.
+16. **Con el túnel el tablero es alcanzable desde internet** (privado, solo la
+    cuenta dueña) y `settings.py` sigue con sus defaults: conviene `DJANGO_SECRET_KEY`
+    propia en el `.env` y revisar `DEBUG`. Entrar por el túnel funcionó sin
+    `CSRF_TRUSTED_ORIGINS` (no está en `settings.py`); si aparece un 403 de CSRF,
+    agregarlo leyendo `DJANGO_CSRF_TRUSTED_ORIGINS` del `.env`.
 
 ---
 
@@ -652,6 +689,8 @@ Solo lo que ayuda a entender la evolución.
 | `47cc083` | Encuadre: la última vela analizada queda centrada al cargar; lo posterior también al entrar a Backtesting y al pausar el replay |
 | `458b5ac` | **Captura rápida de vela** en Backtesting: clic + Enter pega la fecha de la vela y carga (`activarCapturaRapida`) |
 | `efa7301` | **Botón "Exportar caso"**: JSON por corte con el análisis y, aparte, el resultado posterior a 12/24/48 velas; refactor `estructuraUnicaSEQ()`; test `exportar_caso.test.js` |
+| `3f2836e` | Captura rápida: clic + Enter también funciona sobre las velas posteriores (futuro crudo) |
+| `c82c527`, `dd74dd2` | **Túnel privado**: `arrancarTunnel.bat` / `apagarTunnel.bat` (4 ventanas, `devtunnel host tablero.use2`); se prueba un arranque desde VS Code (`arrancar_vscode.bat` + `.vscode/tasks.json`) y se elimina en el mismo cambio |
 
 **Ramas**: `master`, `feature/sr-fractal` (donde está lo más reciente),
 `optimizacion-performance`.
@@ -666,7 +705,7 @@ copy .env.example .env
 python manage.py migrate
 python manage.py createsuperuser
 
-:: tres procesos, cada uno en su terminal (o usar arrancar.bat)
+:: tres procesos, cada uno en su terminal (o usar arrancar.bat; con túnel, arrancarTunnel.bat)
 python manage.py runserver
 celery -A config worker -l info --pool=solo
 celery -A config beat -l info
