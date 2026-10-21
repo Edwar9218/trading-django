@@ -25,7 +25,9 @@ broker/processed/*
 .env
 
 # Editor / SO
-.vscode/
+# .vscode se ignora salvo tasks.json (arranque del tablero dentro de VS Code)
+.vscode/*
+!.vscode/tasks.json
 .idea/
 .DS_Store
 Thumbs.db
