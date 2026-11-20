@@ -4,7 +4,7 @@
 > Basado en el código, la configuración y el historial de git reales.
 > Lo que no pudo determinarse está marcado como **No determinado**.
 >
-> Última sincronización: commit `dd74dd2` (arranque con túnel privado) en la rama `feature/sr-fractal`.
+> Última sincronización: commit `c110a34` (indicador TZT) en la rama `feature/sr-fractal`.
 
 ---
 
@@ -389,8 +389,36 @@ Node**, que reciben las velas ya cargadas.
 | S/R Avanzado | inline (`calcularSR`) | `pref_sr_avanzado` | pivotes confirmados, ruptura, retest R→S/S→R (parcialmente apagado) |
 | S/R Fractal | `static/chartview/fractal_sr.js` | `pref_sr_fractal` | fractales multiescala agrupados en zonas con fuerza 0-100 — *dónde* está la barrera |
 | Secuencia estructural | `static/chartview/secuencia_fractal.js` | `pref_secuencia` | máquina de estados fractal→ruptura→desplazamiento→imbalance→retesteo→continuación, score 0-100 — *qué hace* el precio tras romper |
+| Tzotchev Trend (TZT) | `static/chartview/tzotchev_trend.js` | `pref_tzt` | fuerza de tendencia estadística (port de "Tzotchev Trend [MiesOnCharts]", MPL 2.0): pinta las velas LONG/SHORT y dibuja el panel TZT — *hacia dónde* empuja la tendencia |
 
-**Secuencia estructural** (la más reciente, commit `f87138c`):
+**Tzotchev Trend (TZT)** (commit `c110a34`):
+- Motor: `t = √T · media(retorno)/desviación`, `ST = 2·N(t) − 1` (N por
+  Abramowitz-Stegun 26.2.17). Promedia las ventanas 20/30/60 (rápida/principal/lenta;
+  `DEFAULTS` en el módulo). Score > +0.2 → LONG, < −0.2 → SHORT, en medio
+  mantiene el estado anterior.
+- **Sin repintado**: el estado solo cambia en velas cerradas. En modo online la
+  última vela (abierta) hereda el estado previo; la línea sí se mide en vivo.
+- Con el checkbox **TZT** activo: las velas se pintan verde (LONG) / rojo (SHORT)
+  y aparece el panel TZT bajo el gráfico (línea + relleno hacia el cero, líneas
+  en 0, ±0.2, ±0.5, ±1, flechas en los giros, tabla 20/30/60 bar + Trend + State).
+  Apagado por defecto; "Apagar todo" también lo apaga.
+- **Cursor compartido** entre velas y panel (como TradingView): la vertical cruza
+  ambos y la tabla sigue a la vela bajo el puntero; sin puntero, muestra la última.
+  El eco de `setCrosshairPosition` se corta guardando sobre cuál gráfico está
+  *realmente* el mouse (`tztMouse` + `mouseenter/leave`); una bandera booleana
+  no alcanza porque la notificación es asíncrona.
+- **Eje de fechas abajo**: con el TZT encendido el gráfico de velas oculta su eje
+  de tiempo y lo muestra el panel TZT (`ejeFechasAbajo`); al apagar vuelve.
+  Por eso `.tzt-container` mide 156 px (130 del panel + eje).
+- El panel es un segundo chart de lightweight-charts: una sola serie *baseline*
+  con color de relleno por punto, un punto por vela (whitespace donde no hay
+  dato) para que los índices lógicos coincidan y el rango se sincronice;
+  `alinearEscalaTZT` iguala el ancho del eje de precios.
+- Tests: `chartview/tests_js/tzotchev_trend.test.js` (φ contra integración
+  independiente, causalidad por truncado, vela viva, bordes) y `TZTTests` en
+  `chartview/tests.py`.
+
+**Secuencia estructural** (commit `f87138c`):
 - Estados: `FRACTAL → BREAKOUT → DISPLACEMENT → IMBALANCE → RETEST →
   CONFIRMATION → COMPLETED`, más `INVALIDADO` con motivo explícito.
 - Score = suma auditable de etapas (20/20/20/20/10/10).
@@ -423,10 +451,10 @@ otro motor.
 **`accounts.PerfilUsuario`** — OneToOne con `User`, creado por señal
 `post_save` (`accounts/signals.py`).
 - `tema_oscuro`, `creado`
-- 11 preferencias de checkboxes: `pref_largo`, `pref_mediano`,
+- 12 preferencias de checkboxes: `pref_largo`, `pref_mediano`,
   `pref_corto`, `pref_relleno`, `pref_kalman`, `pref_auto_pivot`,
   `pref_tablero_canales`, `pref_kn_signals`, `pref_sr_avanzado`,
-  `pref_sr_fractal`, `pref_secuencia`
+  `pref_sr_fractal`, `pref_secuencia`, `pref_tzt`
 - `watchlist_generacion` (`PositiveIntegerField`) — contador para
   cancelar tareas Celery obsoletas.
 
@@ -447,7 +475,7 @@ no soporta.
 
 ### Migraciones
 
-`accounts` va por la `0007`. Las `0002`→`0007` son casi todas "agregar
+`accounts` va por la `0008` (`pref_tzt`). Las `0002`→`0008` son casi todas "agregar
 un `pref_*`". **Convención**: cada indicador nuevo con checkbox propio
 agrega un `BooleanField(default=False)` y su migración.
 
@@ -546,8 +574,8 @@ Cosas que no deberían romperse:
 | `django.setup()` al tope de `tasks.py` | en Windows el pool re-importa el módulo y Django no está listo → `AppRegistryNotReady` | `tasks.py` |
 | Sistema de generación | cortar trabajo obsoleto entre divisa y divisa; lo manual gana | `PerfilUsuario`, `tasks.py`, `dashboard/views.py` |
 | Prioridades de Celery (0 manual / 9 barrido) | reordena lo que *espera* en la cola; no interrumpe lo que ya corre | `config/celery.py` |
-| Indicadores calculados en el navegador | no cuestan nada al servidor, usan las velas ya cargadas | los 4 indicadores |
-| Módulos JS puros con `_internals` | poder probar cada fase por separado con Node, sin navegador ni build | `fractal_sr.js`, `secuencia_fractal.js` |
+| Indicadores calculados en el navegador | no cuestan nada al servidor, usan las velas ya cargadas | los 5 indicadores |
+| Módulos JS puros con `_internals` | poder probar cada fase por separado con Node, sin navegador ni build | `fractal_sr.js`, `secuencia_fractal.js`, `tzotchev_trend.js` |
 | Causalidad estricta (sin repintado) | una señal histórica debe ser reproducible; si repinta, cualquier backtest miente | ambos indicadores fractales |
 | Contrato de API idéntico al Flask original | el front-end no tuvo que cambiar cómo pide datos, solo la URL | `chartview/views.py` |
 | `_TF_MAP` duplicado en `analysis.py` | evitar el `sys.exit(1)` de `mt5_export.py` al importarlo | `analysis.py` |
@@ -671,6 +699,7 @@ Solo lo que ayuda a entender la evolución.
 | `0bb027d`, `9bdf74f` | **S/R Fractal**: zonas por agrupación de fractales multiescala |
 | `0493d44` | Optimización (sin descripción en el mensaje) |
 | `f87138c` | **Secuencia estructural**: máquina de estados fractal→…→continuación, score 0-100, panel, alertas, `pref_secuencia` + migración `0007` |
+| `c110a34` | **Tzotchev Trend (TZT)**: velas pintadas LONG/SHORT, panel con cursor compartido y fechas debajo, `pref_tzt` + migración `0008` |
 | `3f97f0e` | Se agrega este `AGENTS.md` |
 | `ad414e2` | Botón para apagar/encender todos los indicadores |
 | `2927fef` | **Modo Backtesting** con reproductor tipo bar replay; "Hasta" pasa a fecha+hora |
@@ -717,6 +746,7 @@ Tests:
 python manage.py test
 node chartview/tests_js/fractal_sr.test.js
 node chartview/tests_js/secuencia_fractal.test.js
+node chartview/tests_js/tzotchev_trend.test.js
 node chartview/tests_js/exportar_caso.test.js
 ```
 
