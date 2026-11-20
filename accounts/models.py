@@ -43,6 +43,11 @@ class PerfilUsuario(models.Model):
     # de estados. Igual que los anteriores, se calcula en el navegador
     # (chartview/static/chartview/secuencia_fractal.js).
     pref_secuencia = models.BooleanField(default=False)
+    # Tzotchev Trend (TZT): fuerza de tendencia de -1 a +1 (promedio de tres
+    # ventanas) con estado LONG/SHORT. Pinta las velas y abre un panel debajo
+    # del gráfico. Se calcula en el navegador
+    # (chartview/static/chartview/tzotchev_trend.js).
+    pref_tzt = models.BooleanField(default=False)
 
     # ── Generación del watchlist ──
     # Se incrementa cada vez que el usuario guarda una selección nueva o

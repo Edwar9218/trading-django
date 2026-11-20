@@ -68,6 +68,7 @@ def grafico(request):
         "pref_sr_avanzado": perfil.pref_sr_avanzado,
         "pref_sr_fractal": perfil.pref_sr_fractal,
         "pref_secuencia": perfil.pref_secuencia,
+        "pref_tzt": perfil.pref_tzt,
     })
 
 
@@ -84,6 +85,7 @@ _CAMPOS_PREFERENCIA = {
     "sr_avanzado": "pref_sr_avanzado",
     "sr_fractal": "pref_sr_fractal",
     "secuencia": "pref_secuencia",
+    "tzt": "pref_tzt",
 }
 
 

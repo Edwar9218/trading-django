@@ -7,6 +7,7 @@
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="{% static 'chartview/fractal_sr.js' %}"></script>
 <script src="{% static 'chartview/secuencia_fractal.js' %}"></script>
+<script src="{% static 'chartview/tzotchev_trend.js' %}"></script>
 <style>
   /* Layout propio de esta página: base.html usa scroll normal (bien
      para el tablero), pero el gráfico necesita ocupar toda la altura
@@ -743,6 +744,30 @@
       display: none;
       flex-shrink: 0;
     }
+    /* Panel de Tzotchev Trend (TZT). margin-left = ancho de la barra de dibujo,
+       para que su eje de tiempo quede alineado con el del gráfico de velas. */
+    .tzt-container {
+      height: 156px;   /* 130 del panel + ~26 del eje de fechas, que va abajo como en TradingView */
+      position: relative;
+      margin-left: 44px;
+      background: #131722;
+      border-top: 1px solid #2a2e39;
+      display: none;
+      flex-shrink: 0;
+    }
+    .tzt-label {
+      position: absolute; top: 4px; left: 8px; z-index: 3;
+      font-size: 11px; color: #848e9c; pointer-events: none;
+    }
+    .tzt-label b { font-weight: 600; margin-left: 4px; }
+    .tzt-readout {
+      position: absolute; top: 4px; right: 72px; z-index: 3;
+      font-size: 11px; pointer-events: none;
+      background: rgba(19,23,34,.78); border: 1px solid #2a2e39; border-radius: 4px;
+      padding: 2px 8px; display: none;
+    }
+    .tzt-readout .tzt-fila { display: flex; justify-content: space-between; gap: 14px; line-height: 1.5; }
+    .tzt-readout .tzt-nom { color: #d1d4dc; }
 
     .empty-screen {
       position: absolute;
@@ -1027,6 +1052,9 @@
       <label title="Secuencia estructural completa: FRACTAL → RUPTURA → DESPLAZAMIENTO → IMBALANCE (FVG) → RETESTEO → CONTINUACIÓN. No marca nada por tener solo un fractal: cada etapa habilita la siguiente y el panel de la derecha muestra el score 0-100 y el estado. Sin repintado: cada etapa aparece en la vela que la confirmó y no se mueve después.">
         <input type="checkbox" class="chk-seq" {% if pref_secuencia %}checked{% endif %}> Secuencia
       </label>
+      <label title="Tzotchev Trend (TZT): fuerza de la tendencia de -1 a +1, promedio de tres ventanas (20, 30 y 60 velas). Pinta las velas según el estado (verde LONG / rojo SHORT) y abre un panel debajo del gráfico con la línea. Pasa a LONG si cierra sobre +0.2 y a SHORT si cierra bajo -0.2; entre ambos niveles mantiene el estado anterior. Sin repintado: el estado solo cambia al cerrar una vela. Es una medida de tendencia, no una probabilidad de acierto. Portado del indicador Tzotchev Trend de MiesOnCharts (TradingView).">
+        <input type="checkbox" class="chk-tzt" {% if pref_tzt %}checked{% endif %}> TZT
+      </label>
       <label title="Prueba varios pivot_len para cada canal y se queda con el de mejor calidad — más lento, pero no hace falta afinarlo a mano en config.py">
         <input type="checkbox" class="chk-auto-pivot" {% if pref_auto_pivot %}checked{% endif %}> Pivot auto
       </label>
@@ -1081,6 +1109,10 @@
       </div>
     </div>
     <div class="smf-container"></div>
+    <div class="tzt-container">
+      <div class="tzt-label"></div>
+      <div class="tzt-readout"></div>
+    </div>
   </div>
 </template>
 
@@ -1255,6 +1287,7 @@ function crearPanel(rootEl, opciones = {}) {
   const sigSrf           = $(".sig-srf");
   const srfBoardEl       = $(".srf-board");
   const chkSeq           = $(".chk-seq");
+  const chkTzt           = $(".chk-tzt");
   const sigSeq           = $(".sig-seq");
   const seqPanelEl       = $(".seq-panel");
   const chkPosicionBoard = $(".chk-posicion-board");
@@ -1266,6 +1299,9 @@ function crearPanel(rootEl, opciones = {}) {
   const drawToolButtons  = rootEl.querySelectorAll(".draw-tool[data-tool]");
   const btnClearDrawings = rootEl.querySelector(".draw-tool[data-action='clear']");
   const smfContainer     = $(".smf-container");
+  const tztContainer     = $(".tzt-container");
+  const tztLabelEl       = $(".tzt-label");
+  const tztReadoutEl     = $(".tzt-readout");
   const channelLegend    = $(".channel-legend");
 
   const sigTextGroup     = $(".sig-text-group");
@@ -1278,6 +1314,12 @@ function crearPanel(rootEl, opciones = {}) {
   // ── Estado propio de este panel ──
   let chart, candleSerie, overlayCtx;
   let smfChart = null, smfHist = null, smfLine = null;
+  let tztChart = null, tztLinea = null, tztRelleno = null;   // panel de Tzotchev Trend
+  let tztIdxPorTiempo = new Map();   // time de vela -> índice (para enlazar el cursor entre gráfico y panel)
+  let tztIdxHover = null;            // vela bajo el cursor (null = mostrar la última)
+  let tztSyncando = false;           // evita el rebote infinito entre los dos crosshairs
+  let tztMouse = null;               // "main" | "tzt" | null: sobre cuál de los dos está el mouse real
+  const tztHorz = { main: true, tzt: true };   // ¿está visible la línea horizontal de cada gráfico?
   let overlaySeries = [];      // líneas del Kalman
   let channelSeriesList = [];  // líneas de canal (base/par/mid)
   let knSeriesList = [];       // líneas del indicador KN (entry/SL/TP1-3)
@@ -1297,7 +1339,10 @@ function crearPanel(rootEl, opciones = {}) {
   let mostrarKN = chkKn.checked;
   let mostrarSR = chkSr.checked;
   let mostrarSRF = chkSrf.checked;
-  let srfResaltada = null;     // zona resaltada al pasar el mouse por su fila de la tabla
+  let mostrarTZT = chkTzt.checked;
+  let currentTZT = null;       // resultado de TzotchevTrend.calcular sobre las velas de la serie
+  let velasSerie = null;       // loadedCandles + velas en vivo mezcladas (null = no hubo ninguna aún)
+  let srfResaltada = null;    // zona resaltada al pasar el mouse por su fila de la tabla
   const leerLS = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === "1"; } catch (e) { return d; } };
   const guardarLS = (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch (e) {} };
 
@@ -3228,6 +3273,284 @@ function crearPanel(rootEl, opciones = {}) {
     }
   }
 
+  // ── Tzotchev Trend (TZT) ──
+  // El motor (tzotchev_trend.js) es puro y está probado aparte; acá solo se
+  // dibuja: las velas pintadas según el estado y, debajo del gráfico, un panel
+  // con la línea, su relleno hacia el cero, los niveles y las flechas de giro.
+  // Los colores son los del indicador original de TradingView.
+  const TZT_COL = { up: "#00ff15", dn: "#ff0000", flat: "#787b86" };
+  const colorTZT = estado => estado === 1 ? TZT_COL.up : estado === -1 ? TZT_COL.dn : TZT_COL.flat;
+
+  // En Modo Online la última vela todavía se está formando: su estado no se
+  // actualiza hasta que cierre (como barstate.isconfirmed en el original), así
+  // un color mostrado en una vela cerrada nunca cambia después.
+  const tztVivo = () => modoGrafico === "online";
+
+  function calcularTZT(velas) {
+    if (!window.TzotchevTrend || !velas || velas.length < 2) return null;
+    try {
+      return TzotchevTrend.calcular(velas, { ultimaCerrada: !tztVivo() });
+    } catch (e) {
+      console.error("[tzt] no se pudo calcular:", e);
+      return null;
+    }
+  }
+
+  // Las velas que muestra hoy la serie principal: lo cargado más las velas en
+  // vivo que llegaron después (loadedCandles no las incluye a propósito).
+  const velasActuales = () => velasSerie || loadedCandles;
+
+  // Una vela con el color de su estado. Sin estado (el indicador todavía no
+  // cruzó ningún nivel) o con TZT apagado queda tal cual: colores normales.
+  function velaPintada(vela, i) {
+    if (!mostrarTZT || !currentTZT) return vela;
+    const s = currentTZT.state[i];
+    if (!s) return vela;
+    const col = colorTZT(s);
+    return { ...vela, color: col, wickColor: col, borderColor: col };
+  }
+  function velasPintadas(velas) {
+    if (!mostrarTZT || !currentTZT || currentTZT.n !== velas.length) return velas;
+    return velas.map((v, i) => velaPintada(v, i));
+  }
+
+  // setData sobre la serie de velas conservando exactamente el encuadre.
+  function repintarVelas(velas) {
+    const rango = chart.timeScale().getVisibleLogicalRange();
+    candleSerie.setData(velasPintadas(velas));
+    if (rango) chart.timeScale().setVisibleLogicalRange(rango);
+  }
+
+  // Mantiene velasSerie al día con las velas en vivo. Devuelve "nueva" si
+  // apareció una vela (la que estaba en formación se cerró), "igual" si solo
+  // se actualizó la última, y null si la vela llegó vieja (se ignora).
+  function mezclarVelaViva(vela) {
+    if (!velasSerie) velasSerie = loadedCandles.slice();
+    const ult = velasSerie[velasSerie.length - 1];
+    if (!ult || vela.time > ult.time) { velasSerie.push(vela); return "nueva"; }
+    if (vela.time === ult.time) { velasSerie[velasSerie.length - 1] = vela; return "igual"; }
+    return null;
+  }
+
+  function crearPanelTZT() {
+    const D = TzotchevTrend.DEFAULTS;
+    const LS = LightweightCharts.LineStyle;
+    tztChart = LightweightCharts.createChart(tztContainer, {
+      width: tztContainer.clientWidth, height: tztContainer.clientHeight,
+      layout: { background: { type: "solid", color: "#131722" }, textColor: "#d1d4dc" },
+      grid: { vertLines: { color: "#1e222d" }, horzLines: { visible: false } },
+      rightPriceScale: { borderColor: "#2a2e39", scaleMargins: { top: 0.08, bottom: 0.08 } },
+      timeScale: { borderColor: "#2a2e39", timeVisible: true, secondsVisible: false, visible: false,
+                   rightOffset: 45, shiftVisibleRangeOnNewBar: false },
+      // El que manda es el gráfico de velas: este panel solo lo sigue.
+      handleScroll: false, handleScale: false,
+    });
+    const formato = { type: "price", precision: 2, minMove: 0.01 };
+
+    // Relleno hacia el cero: una serie "baseline" con el color de cada punto según
+    // el ESTADO (no según el signo de la línea: en la zona de retención la línea
+    // puede estar bajo cero y seguir en LONG, y el relleno debe seguir verde).
+    // Su línea es transparente: la que se ve es la de abajo. Se crea antes que la
+    // línea para quedar dibujada detrás de ella.
+    tztRelleno = tztChart.addBaselineSeries({
+      baseValue: { type: "price", price: 0 },
+      topLineColor: "rgba(0,0,0,0)", bottomLineColor: "rgba(0,0,0,0)",
+      lineWidth: 1, priceFormat: formato,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+    });
+
+    tztLinea = tztChart.addLineSeries({
+      color: TZT_COL.flat, lineWidth: 2, priceFormat: formato,
+      priceLineVisible: false, lastValueVisible: true,
+      // Escala fija: la lectura vive entre -1 y +1, no tiene que ajustarse a los datos.
+      autoscaleInfoProvider: () => ({ priceRange: { minValue: -1.15, maxValue: 1.15 } }),
+    });
+
+    const nivel = (price, color, lineStyle) => tztLinea.createPriceLine({
+      price, color, lineWidth: 1, lineStyle, axisLabelVisible: false, title: "",
+    });
+    nivel(0, hexToRgba(TZT_COL.flat, 0.4), LS.Solid);
+    nivel(D.umbralLong, hexToRgba(TZT_COL.up, 0.4), LS.Dotted);
+    nivel(D.umbralShort, hexToRgba(TZT_COL.dn, 0.4), LS.Dotted);
+    [0.5, -0.5].forEach(p => nivel(p, hexToRgba(TZT_COL.flat, 0.25), LS.Dashed));
+    [1, -1].forEach(p => nivel(p, hexToRgba(TZT_COL.flat, 0.4), LS.Dashed));
+
+    // Sigue el zoom/paneo del gráfico de velas. Una sola vez, como el panel SMF.
+    chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+      if (range && tztChart && mostrarTZT) tztChart.timeScale().setVisibleLogicalRange(range);
+    });
+
+    // ── Cursor compartido (como TradingView) ──
+    // La línea vertical atraviesa el gráfico Y el panel: al pasar el mouse por una
+    // vela se ve qué marcaba el TZT en ese mismo momento, y al revés. La línea
+    // HORIZONTAL solo se muestra en el gráfico que el mouse está tocando; en el
+    // otro marcaría un valor que no corresponde a lo que se mira (el cierre de la
+    // vela en el panel, o el valor del TZT en el gráfico de precios).
+    const lineaHorizontal = (cual, visible) => {
+      if (tztHorz[cual] === visible) return;
+      tztHorz[cual] = visible;
+      (cual === "main" ? chart : tztChart).applyOptions({ crosshair: { horzLine: { visible, labelVisible: visible } } });
+    };
+    const indiceDe = param => (param.time === undefined ? undefined : tztIdxPorTiempo.get(param.time));
+    const verLectura = idx => {
+      if (idx === tztIdxHover) return;
+      tztIdxHover = idx;
+      actualizarLecturaTZT(idx);
+    };
+
+    // Mouse sobre el gráfico de velas → cursor en el panel.
+    chart.subscribeCrosshairMove(param => {
+      // Solo reacciona al mouse REAL. El aviso de un setCrosshairPosition hecho por
+      // el otro gráfico llega más tarde y sin pasar por la bandera, y contestarle
+      // hacía rebotar los dos cursores: el del gráfico saltaba al cierre de la vela.
+      if (tztMouse !== "main" || tztSyncando || !mostrarTZT || !currentTZT) return;
+      const idx = indiceDe(param);
+      tztSyncando = true;
+      try {
+        if (idx === undefined) {
+          tztChart.clearCrosshairPosition();
+          lineaHorizontal("main", true); lineaHorizontal("tzt", true);
+        } else {
+          const v = currentTZT.score[idx];
+          tztChart.setCrosshairPosition(v === null ? 0 : v, param.time, tztLinea);
+          lineaHorizontal("tzt", false); lineaHorizontal("main", true);
+        }
+        verLectura(idx === undefined ? null : idx);
+      } finally { tztSyncando = false; }
+    });
+
+    // Mouse sobre el panel → cursor en el gráfico de velas (a la altura del cierre).
+    tztChart.subscribeCrosshairMove(param => {
+      if (tztMouse !== "tzt" || tztSyncando || !mostrarTZT || !currentTZT) return;
+      const velas = velasActuales();
+      const idx = indiceDe(param);
+      tztSyncando = true;
+      try {
+        if (idx === undefined || !velas[idx]) {
+          chart.clearCrosshairPosition();
+          lineaHorizontal("main", true); lineaHorizontal("tzt", true);
+          verLectura(null);
+        } else {
+          chart.setCrosshairPosition(velas[idx].close, param.time, candleSerie);
+          lineaHorizontal("main", false); lineaHorizontal("tzt", true);
+          verLectura(idx);
+        }
+      } finally { tztSyncando = false; }
+    });
+
+    // Qué gráfico tiene el mouse encima (la guarda de arriba). Al salir de uno se
+    // limpia el cursor del otro, que ya no tiene a qué seguir.
+    const entrar = cual => () => { tztMouse = cual; };
+    const salir = (cual, otro) => () => {
+      if (tztMouse === cual) tztMouse = null;
+      if (tztSyncando) return;
+      tztSyncando = true;
+      try { otro.clearCrosshairPosition(); } finally { tztSyncando = false; }
+      lineaHorizontal("main", true); lineaHorizontal("tzt", true);
+      if (mostrarTZT && currentTZT) verLectura(null);
+    };
+    chartPlot.addEventListener("mouseenter", entrar("main"));
+    chartPlot.addEventListener("mouseleave", () => salir("main", tztChart)());
+    tztContainer.addEventListener("mouseenter", entrar("tzt"));
+    tztContainer.addEventListener("mouseleave", () => salir("tzt", chart)());
+  }
+
+  // Para que las velas del panel caigan justo debajo de las del gráfico, los dos
+  // ejes de precio tienen que medir lo mismo de ancho: se iguala al principal.
+  function alinearEscalaTZT() {
+    try {
+      const w = chart.priceScale("right").width();
+      if (w > 0) tztChart.applyOptions({ rightPriceScale: { minimumWidth: w } });
+    } catch (e) { /* sin esa opción el panel sigue siendo usable, solo menos exacto */ }
+  }
+
+  // Como en TradingView, con el TZT encendido las fechas van debajo del panel
+  // (el último de la pila) y el gráfico de velas no dibuja su propio eje.
+  function ejeFechasAbajo(abajo) {
+    if (chart) chart.applyOptions({ timeScale: { visible: !abajo } });
+    if (tztChart) tztChart.applyOptions({ timeScale: { visible: abajo } });
+  }
+
+  const fmtTZT = v => (v === null || v === undefined) ? "—" : (v >= 0 ? "+" : "") + v.toFixed(2);
+
+  // Etiqueta del panel y lecturas por ventana, como la tabla del indicador
+  // original: se ve qué horizontes están de acuerdo. Sin argumento (o con null)
+  // muestra la última vela; con un índice, la vela bajo el cursor.
+  function actualizarLecturaTZT(idx) {
+    const t = currentTZT, o = t.opciones;
+    const i = (idx === undefined || idx === null || idx < 0 || idx >= t.n) ? t.n - 1 : idx;
+    const u = t.n ? { idx: i, score: t.score[i], stM: t.stM[i], stF: t.stF[i], stS: t.stS[i], state: t.state[i] } : null;
+    if (!u || u.score === null) {
+      const faltan = Math.max(o.lenM, o.usarRapida ? o.lenF : 0, o.usarLenta ? o.lenS : 0) + 1;
+      tztLabelEl.innerHTML = `TZT <span style="color:#5d6573">· hacen falta ${faltan} velas</span>`;
+      tztReadoutEl.style.display = "none";
+      return;
+    }
+    const colLectura = v => v === null ? TZT_COL.flat : v > o.umbralLong ? TZT_COL.up : v < o.umbralShort ? TZT_COL.dn : TZT_COL.flat;
+    const fila = (nom, val, col) => `<div class="tzt-fila"><span class="tzt-nom">${nom}</span><span style="color:${col}">${val}</span></div>`;
+    const filas = [];
+    if (o.usarRapida) filas.push(fila(`${o.lenF} bar`, fmtTZT(u.stF), colLectura(u.stF)));
+    filas.push(fila(`${o.lenM} bar`, fmtTZT(u.stM), colLectura(u.stM)));
+    if (o.usarLenta) filas.push(fila(`${o.lenS} bar`, fmtTZT(u.stS), colLectura(u.stS)));
+    const colEstado = colorTZT(u.state);
+    filas.push(fila("Trend", fmtTZT(u.score), colEstado));
+    filas.push(fila("State", u.state === 1 ? "LONG" : u.state === -1 ? "SHORT" : "NEUTRAL", colEstado));
+    tztReadoutEl.innerHTML = filas.join("");
+    tztReadoutEl.style.display = "block";
+    tztLabelEl.innerHTML = `TZT <b style="color:${colEstado}">${fmtTZT(u.score)}</b>`;
+  }
+
+  function renderizarTZT() {
+    if (!mostrarTZT || !currentTZT || !window.TzotchevTrend) {
+      tztContainer.style.display = "none";
+      ejeFechasAbajo(false);
+      return;
+    }
+    tztContainer.style.display = "block";
+    if (!tztChart) crearPanelTZT();
+    else tztChart.applyOptions({ width: tztContainer.clientWidth, height: tztContainer.clientHeight });
+    ejeFechasAbajo(true);
+
+    const velas = velasActuales();
+    const t = currentTZT;
+    if (velas.length !== t.n) return;   // desfasado con la serie: mejor no dibujar nada inconsistente
+
+    // Un punto por vela (sin dato = "whitespace"), así los índices lógicos de
+    // este panel coinciden con los del gráfico de velas y se pueden sincronizar.
+    const linea = [];
+    const relleno = [];
+    const marcas = [];
+    tztIdxPorTiempo = new Map();
+    const transp = "rgba(0,0,0,0)";
+    const rellenoDe = { "1": hexToRgba(TZT_COL.up, 0.14), "-1": hexToRgba(TZT_COL.dn, 0.14),
+                        "0": hexToRgba(TZT_COL.flat, 0.14) };   // = color.new(stCol, 86) del original
+    for (let i = 0; i < t.n; i++) {
+      const time = velas[i].time;
+      const v = t.score[i];
+      tztIdxPorTiempo.set(time, i);
+      if (v === null) {
+        linea.push({ time });
+        relleno.push({ time });
+        continue;
+      }
+      const s = t.state[i];
+      linea.push({ time, value: v, color: colorTZT(s) });
+      const c = rellenoDe[s];
+      relleno.push({ time, value: v, topFillColor1: c, topFillColor2: c,
+                     bottomFillColor1: c, bottomFillColor2: c, topLineColor: transp, bottomLineColor: transp });
+      if (t.flipUp[i]) marcas.push({ time, position: "inBar", color: TZT_COL.up, shape: "arrowUp", size: 1 });
+      else if (t.flipDn[i]) marcas.push({ time, position: "inBar", color: TZT_COL.dn, shape: "arrowDown", size: 1 });
+    }
+    tztRelleno.setData(relleno);
+    tztLinea.setData(linea);
+    tztLinea.setMarkers(marcas);
+
+    actualizarLecturaTZT(tztIdxHover);   // si el mouse está sobre una vela, la lectura no salta a la última
+    alinearEscalaTZT();
+    const rango = chart.timeScale().getVisibleLogicalRange();
+    if (rango) tztChart.timeScale().setVisibleLogicalRange(rango);
+  }
+
   // Respaldo por si el bróker no informó "digits" para este símbolo:
   // infiere la precisión a ojo, a partir de la magnitud del precio —
   // igual que hace cualquier plataforma cuando tiene que adivinar.
@@ -3316,6 +3639,7 @@ function crearPanel(rootEl, opciones = {}) {
     if (!data.candles || data.candles.length === 0) {
       console.error("El servidor respondió sin velas para mostrar:", data);
       candleSerie.setData([]);
+      velasSerie = null; currentTZT = null; renderizarTZT();
       setEstado("❌ Sin velas (F12 consola)", "error");
       return;
     }
@@ -3335,7 +3659,10 @@ function crearPanel(rootEl, opciones = {}) {
     candleSerie.applyOptions({ priceFormat: { type: "price", precision, minMove } });
     console.log(`[grafico] precio — digits de MT5: ${data.digits} · precisión aplicada: ${precision} decimales`);
 
-    candleSerie.setData(data.candles);
+    // TZT se calcula ANTES de cargar la serie porque define el color de cada vela.
+    velasSerie = null; tztIdxHover = null;
+    currentTZT = mostrarTZT ? calcularTZT(data.candles) : null;
+    candleSerie.setData(velasPintadas(data.candles));
     digitsActual = precision;
     ultimasSenales = data.signals || null;
     ultimoSMF = data.smf || null;
@@ -3380,6 +3707,7 @@ function crearPanel(rootEl, opciones = {}) {
     requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
 
     renderizarSMF(data.smf, mantenerVista);
+    renderizarTZT();
     currentPosicionCanales = data.posicion_canales || [];
     renderizarPosicionBoard();
     renderizarSenales(data.signals, data.channels);
@@ -3645,7 +3973,9 @@ function crearPanel(rootEl, opciones = {}) {
       }
 
       loadedCandles = [...data.candles, ...loadedCandles];
-      candleSerie.setData(loadedCandles);
+      velasSerie = null; tztIdxHover = null;   // al anteponer velas, los índices se corren
+      currentTZT = mostrarTZT ? calcularTZT(loadedCandles) : null;
+      candleSerie.setData(velasPintadas(loadedCandles));
       currentSRF = calcularSRFractal(loadedCandles);
       currentSEQ = calcularSecuencia(loadedCandles);
       dibujarKalmanYMarkers();
@@ -3656,6 +3986,7 @@ function crearPanel(rootEl, opciones = {}) {
       revisarAlertasSEQ(true);
 
       if (rangoVisible) chart.timeScale().setVisibleRange(rangoVisible);
+      renderizarTZT();   // después de restaurar el encuadre: el panel copia el del gráfico
       requestAnimationFrame(() => requestAnimationFrame(redrawOverlay));
 
       btnCargarMas.textContent = "← Cargar más historial";
@@ -3808,6 +4139,10 @@ function crearPanel(rootEl, opciones = {}) {
       redrawOverlay();
       if (smfChart) {
         smfChart.applyOptions({ width: smfContainer.clientWidth, height: smfContainer.clientHeight });
+      }
+      if (tztChart && mostrarTZT && tztContainer.clientWidth > 0) {
+        tztChart.applyOptions({ width: tztContainer.clientWidth, height: tztContainer.clientHeight });
+        alinearEscalaTZT();
       }
     }).observe(chartContainer);
 
@@ -3996,6 +4331,16 @@ function crearPanel(rootEl, opciones = {}) {
       requestAnimationFrame(redrawOverlay);
       guardarPreferencia("secuencia", e.target.checked);
     });
+    chkTzt.addEventListener("change", e => {
+      mostrarTZT = e.target.checked;
+      tztIdxHover = null;
+      const velas = velasActuales();
+      currentTZT = mostrarTZT && velas.length ? calcularTZT(velas) : null;
+      // Pinta las velas por estado (o les devuelve sus colores normales al apagar).
+      if (velas.length) repintarVelas(velas);
+      renderizarTZT();
+      guardarPreferencia("tzt", e.target.checked);
+    });
     chkAutoPivot.addEventListener("change", e => {
       guardarPreferencia("auto_pivot", e.target.checked);
     });
@@ -4072,7 +4417,20 @@ function crearPanel(rootEl, opciones = {}) {
     // vela nueva del timeframe), la agrega al final sola.
     if (!vela || !symbolActual) return;
     try {
-      candleSerie.update(vela);
+      const cambio = mezclarVelaViva(vela);
+      if (cambio === null) return;   // llegó una vela más vieja que la última: se ignora
+      if (mostrarTZT && currentTZT) {
+        // Con TZT encendido se recalcula con la vela en vivo: la línea la mide, pero
+        // el estado (y el color) solo sale de las velas cerradas. Si apareció una
+        // vela nueva, la anterior acaba de cerrar y su color definitivo puede ser
+        // otro: update() no puede tocar velas viejas, así que se recarga la serie.
+        currentTZT = calcularTZT(velasSerie);
+        if (cambio === "nueva") repintarVelas(velasSerie);
+        else candleSerie.update(velaPintada(vela, velasSerie.length - 1));
+        renderizarTZT();
+      } else {
+        candleSerie.update(vela);
+      }
       if (lastRealTime === null || vela.time >= lastRealTime) lastRealTime = vela.time;
     } catch (e) {
       // Puede pasar justo al cambiar de símbolo/timeframe, si un
